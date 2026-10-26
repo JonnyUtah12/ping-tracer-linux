@@ -79,6 +79,30 @@ const BASE = sea ? path.dirname(process.execPath) : __dirname;
 // uninstalls never touch it; a portable exe keeps its data folder next to itself.
 const INSTALLED = !!sea && fs.existsSync(path.join(BASE, 'installed.flag'));
 const WIN = os.platform() === 'win32';
+const LINUX = os.platform() === 'linux';
+// Safe subprocess runner: argument arrays only (never a shell string), always resolves, distinguishes
+// "command not installed" from "command failed" so callers can give actionable messages (spec §4 of the
+// Linux port: a missing utility must never look like a network failure).
+const run = (cmd, args, opts = {}) => new Promise(r => execFile(cmd, args, { timeout: 15000, windowsHide: true, ...opts },
+  (e, so, se) => r(e ? { ok: false, missing: e.code === 'ENOENT', err: e.code === 'ENOENT' ? cmd + ': not installed' : String(so || se || e.message).trim().split('\n')[0], out: String(so || '') }
+                     : { ok: true, missing: false, err: null, out: String(so || '') })));
+// Streaming sibling of run(): spawn + stdout consumed line by line, resolving with whatever was collected when
+// the cap elapses (SIGKILL). iputils utilities block-buffer stdout on a pipe, so execFile + a subprocess cap
+// loses the WHOLE run (verified on Ubuntu: killed at the cap -> 0 bytes). Partial output is a valid result here,
+// and a missing binary still reports missing:true (spec §4: never present a tooling problem as a network one).
+const runStream = (cmd, args, onLine, opts = {}) => new Promise(resolve => {
+  let child;
+  try { child = spawn(cmd, args, { windowsHide: true }); }
+  catch (e) { return resolve({ ok: false, missing: e.code === 'ENOENT', err: e.code === 'ENOENT' ? cmd + ': not installed' : String(e.message).trim().split('\n')[0], out: '' }); }
+  let out = '', tail = '', err = '', done = false;
+  const finish = r => { if (done) return; done = true; clearTimeout(cap); resolve(r); };
+  const cap = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, opts.timeout || 60000);
+  child.stdout.on('data', d => { tail += d; const ls = tail.split(/\r?\n/); tail = ls.pop(); for (const l of ls) { out += l + '\n'; try { onLine && onLine(l); } catch {} } });
+  child.stderr.on('data', d => { err += d; });
+  child.on('error', e => finish({ ok: false, missing: e.code === 'ENOENT', err: e.code === 'ENOENT' ? cmd + ': not installed' : String(e.message).trim().split('\n')[0], out }));
+  child.on('close', code => finish({ ok: code === 0, missing: false, err: code ? (String(err).trim().split('\n')[0] || 'exit ' + code) : '', out: out + tail }));
+});
+const chmod600 = f => { try { if (!WIN) fs.chmodSync(f, 0o600); } catch {} }; // user-only readability for secrets on POSIX
 let DATA_DIR = process.env.PP_DATA || (INSTALLED && process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'PingTracer', AGENT ? 'data-agent' : 'data') : path.join(BASE, AGENT ? 'data-agent' : 'data'));
 let STATE_FILE = path.join(DATA_DIR, 'state.json');
 const BACKGROUND = argv.includes('--background'); // started by Windows at logon: stay in the tray, don't open a window
@@ -188,8 +212,8 @@ function load() {
     targets.forEach((t, i) => { dbHydrate(t); if (t.autostart) setTimeout(() => { if (targets.includes(t)) start(t); }, i * Math.floor(cfgOf(t).intervalMs / Math.max(1, targets.length))); });
   } catch { /* first run */ }
 }
-let lastSaved = '', saveErrorShown = false;
-function save() { const j = JSON.stringify(stateObj()); if (j === lastSaved) return; lastSaved = j; fs.writeFile(STATE_FILE, j, e => { if (e && !saveErrorShown) { saveErrorShown = true; console.error('cannot write ' + STATE_FILE + ': ' + e.message); } else if (!e) saveErrorShown = false; }); } // access-denied is logged once, never crashes the app
+let lastSaved = '', saveErrorShown = false, statePermsSet = false;
+function save() { const j = JSON.stringify(stateObj()); if (j === lastSaved) return; lastSaved = j; fs.writeFile(STATE_FILE, j, e => { if (e && !saveErrorShown) { saveErrorShown = true; console.error('cannot write ' + STATE_FILE + ': ' + e.message); } else if (!e) { saveErrorShown = false; if (!statePermsSet) { statePermsSet = true; chmod600(STATE_FILE); } } }); } // access-denied is logged once, never crashes the app; the file can contain an SMTP secret, so 0600 on POSIX
 setInterval(save, 10000).unref(); // autosave; unref so requiring this module (tests) doesn't hold the event loop open
 process.on('SIGINT', () => { saveSync(); process.exit(); });
 function saveSync() { try { dbFlush(); fs.writeFileSync(STATE_FILE, JSON.stringify(stateObj())); } catch {} }
@@ -235,58 +259,211 @@ function helperProbe(host, ttl, timeoutMs, size) {
     setTimeout(() => { if (hpending.delete(id)) resolve(null); }, timeoutMs + 3000);
   });
 }
-// ---- email (SMTP via the helper's .NET client) ----
-// Secrets at rest: the SMTP password is encrypted with Windows DPAPI (bound to this user account) through the native helper.
+// ---- email (SMTP via the helper's .NET client on Windows; a built-in Node SMTP client on Linux) ----
+// Secrets at rest: on Windows the SMTP password is encrypted with DPAPI (bound to the user account) through the
+// native helper. On Linux there is no DPAPI: the password is encrypted with AES-256-GCM under a random key file
+// (chmod 600) in the data folder — bound to this installation and readable only by this user.
 function dpapi(op, base64) { // op 'E' encrypts, 'X' decrypts; resolves to base64 text or null
   if (!helperReady) return Promise.resolve(null);
   return new Promise(resolve => { const id = String(++hid); hpending.set('S' + id, resolve); helper.stdin.write(op + ' ' + id + ' ' + base64 + '\n'); setTimeout(() => { if (hpending.delete('S' + id)) resolve(null); }, 8000); });
 }
-const encryptSecret = async text => text ? dpapi('E', Buffer.from(text, 'utf8').toString('base64')) : null;
-const decryptSecret = async enc => { const r = enc ? await dpapi('X', enc) : null; return r ? Buffer.from(r, 'base64').toString('utf8') : ''; };
+const SECRET_MAGIC = 'k1:'; // local key-file ciphertext marker (AES-256-GCM, base64 of iv|tag|ct)
+let localKey = null;
+function localSecretKey() { // lazily create DATA_DIR/secret.key (0600); null if the folder is not writable
+  if (localKey) return localKey;
+  try {
+    const f = path.join(DATA_DIR, 'secret.key');
+    if (fs.existsSync(f)) { const k = fs.readFileSync(f); if (k.length === 32) { localKey = k; return k; } }
+    const k = require('crypto').randomBytes(32);
+    fs.writeFileSync(f, k); chmod600(f); localKey = k; return k;
+  } catch { return null; }
+}
+function localSecretEncrypt(text) {
+  const k = localSecretKey(); if (!k) return null;
+  const c = require('crypto'), iv = c.randomBytes(12), e = c.createCipheriv('aes-256-gcm', k, iv);
+  const ct = Buffer.concat([e.update(text, 'utf8'), e.final()]);
+  return SECRET_MAGIC + Buffer.concat([iv, e.getAuthTag(), ct]).toString('base64');
+}
+function localSecretDecrypt(enc) {
+  const k = localSecretKey();
+  if (!k) return null;
+  if (!String(enc).startsWith(SECRET_MAGIC)) return ''; // foreign/other-format input (e.g. a Windows DPAPI blob) has no local plaintext: report empty, never throw
+  try {
+    const b = Buffer.from(String(enc).slice(SECRET_MAGIC.length), 'base64');
+    const d = require('crypto').createDecipheriv('aes-256-gcm', k, b.subarray(0, 12));
+    d.setAuthTag(b.subarray(12, 28));
+    return Buffer.concat([d.update(b.subarray(28)), d.final()]).toString('utf8');
+  } catch { return null; } // wrong key / tampered ciphertext
+}
+const encryptSecret = async text => {
+  if (!text) return null;
+  const b64 = Buffer.from(text, 'utf8').toString('base64');
+  return (await dpapi('E', b64)) || localSecretEncrypt(text);
+};
+const decryptSecret = async enc => {
+  if (!enc) return '';
+  if (String(enc).startsWith(SECRET_MAGIC)) return localSecretDecrypt(enc) || '';
+  const r = await dpapi('X', enc); return r ? Buffer.from(r, 'base64').toString('utf8') : '';
+};
 async function migrateSecrets() { // a password saved by an earlier version in plain text gets encrypted on first start
   const m = settings.smtp; if (!m || !m.pass || m.passEnc) return;
   const enc = await encryptSecret(m.pass); if (enc) { m.passEnc = enc; m.pass = ''; save(); }
 }
-async function sendMail(subject, body) {
-  const s = settings.smtp || {};
-  if (!helperReady) return { ok: false, error: 'email needs the native helper (Windows)' };
-  if (!s.host || !s.to || !s.from) return { ok: false, error: 'SMTP host, from and to must be set in Settings' };
-  const pw = s.passEnc ? await decryptSecret(s.passEnc) : (s.pass || '');
-  const b = x => Buffer.from(String(x ?? ''), 'utf8').toString('base64');
+// Minimal SMTP client for the built-in (non-helper) path: plain, TLS (465) and STARTTLS (587/25), AUTH LOGIN.
+// Runs entirely as a normal user; no sendmail binary dependency; never logs the password.
+function smtpSend(s, subject, bodyText) {
   return new Promise(resolve => {
-    const id = String(++hid);
-    hpending.set('M' + id, resolve);
-    helper.stdin.write(`M ${id} ${b(s.host)} ${b(s.port || 25)} ${b(s.ssl ? '1' : '0')} ${b(s.user)} ${b(pw)} ${b(s.from)} ${b(s.to)} ${b(subject)} ${b(body)}\n`);
-    setTimeout(() => { if (hpending.delete('M' + id)) resolve({ ok: false, error: 'timeout' }); }, 30000);
+    const net = require('net');
+    const tls = require('tls');
+    const from = String(s.from || ''), toList = String(s.to || '').split(/[,;\s]+/).filter(Boolean);
+    const pw = String(s.pass || '');
+    let sock, buf = '', done = false, upgraded = false;
+    const to = setTimeout(() => finish({ ok: false, error: 'SMTP timeout' }), 30000);
+    const finish = r => { if (done) return; done = true; clearTimeout(to); try { sock.destroy(); } catch {} resolve(r); };
+    const queue = [];
+    const next = () => new Promise((res, rej) => queue.push({ res, rej })); // resolve with the next complete reply
+    const cmd = line => { sock.write(line + '\r\n'); return next(); };
+    const expect = (p, codes) => p.then(t => { if (!codes.includes(t.code)) throw new Error('SMTP ' + t.line.slice(0, 160)); return t.text; });
+    const onData = d => {
+      buf += d;
+      let i, code = 0, line = '', text = [];
+      while ((i = buf.indexOf('\r\n')) >= 0) {
+        const l = buf.slice(0, i); buf = buf.slice(i + 2);
+        const m = /^(\d{3})([ -])(.*)$/.exec(l); if (!m) continue;
+        code = +m[1]; line = l; text.push(m[3]);
+        if (m[2] === '-') continue; // multi-line reply: keep collecting
+        const chunks = text; text = [];
+        const q = queue.shift();
+        if (q) q.res({ code, line, text: chunks.join('\n') });
+      }
+    };
+    const attach = () => { sock.on('data', onData); sock.on('error', e => finish({ ok: false, error: 'SMTP: ' + e.message })); sock.on('close', () => finish({ ok: false, error: 'SMTP connection closed' })); };
+    (async () => {
+      sock = (s.ssl ? tls : net).connect({ host: s.host, port: +s.port || 25, servername: net.isIP(s.host) ? undefined : s.host });
+      attach();
+      await expect(next(), [220]); // greeting
+      let caps = await expect(cmd(`EHLO ${os.hostname() || 'pingtracer.local'}`), [250]);
+      if (!s.ssl && /STARTTLS/i.test(caps) && !upgraded) {
+        await expect(cmd('STARTTLS'), [220]);
+        upgraded = true; buf = '';
+        sock = tls.connect({ socket: sock, servername: s.host, rejectUnauthorized: false }); // self-signed relays are common on LANs
+        attach();
+        caps = await expect(cmd(`EHLO ${os.hostname() || 'pingtracer.local'}`), [250]);
+      }
+      if (s.user && pw && /AUTH\b[^\n]*LOGIN/i.test(caps)) {
+        await expect(cmd('AUTH LOGIN'), [334]);
+        await expect(cmd(Buffer.from(String(s.user), 'utf8').toString('base64')), [334]);
+        await expect(cmd(Buffer.from(pw, 'utf8').toString('base64')), [235]);
+      }
+      await expect(cmd(`MAIL FROM:<${from}>`), [250, 251]);
+      for (const t of toList) await expect(cmd(`RCPT TO:<${t}>`), [250, 251]);
+      await expect(cmd('DATA'), [354]);
+      const crlf = t => String(t).replace(/\r?\n/g, '\r\n');
+      const msg = `From: ${from}\r\nTo: ${toList.join(', ')}\r\nSubject: ${crlf(subject)}\r\nDate: ${new Date().toUTCString()}\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n` + crlf(bodyText).replace(/^\./g, '..') + '\r\n.';
+      sock.write(msg + '\r\n');
+      await expect(next(), [250]); // DATA acknowledgement
+      try { await expect(cmd('QUIT'), [221]); } catch {}
+      finish({ ok: true });
+    })().catch(e => finish({ ok: false, error: String(e.message || e) }));
   });
 }
-
-// ---- start with Windows: per-user Run key (no admin needed). Only meaningful for the packaged exe. ----
-const RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
-const regRun = args => new Promise(r => execFile('reg', args, { windowsHide: true, timeout: 10000 }, (e, so) => r({ ok: !e, out: String(so || '') })));
-async function autostartState() { if (!WIN || !sea) return false; const r = await regRun(['query', RUN_KEY, '/v', 'PingTracer']); return r.ok && r.out.includes(process.execPath); }
-async function setAutostart(on) {
-  if (!WIN) return 'only available on Windows';
-  if (!sea) return 'only available in the packaged PingTracer.exe';
-  const r = on ? await regRun(['add', RUN_KEY, '/v', 'PingTracer', '/t', 'REG_SZ', '/d', `"${process.execPath}" --background`, '/f']) : await regRun(['delete', RUN_KEY, '/v', 'PingTracer', '/f']);
-  return r.ok || !on ? null : 'could not write the Run registry key';
+async function sendMail(subject, body) {
+  const s = settings.smtp || {};
+  if (!s.host || !s.to || !s.from) return { ok: false, error: 'SMTP host, from and to must be set in Settings' };
+  const pw = s.passEnc ? await decryptSecret(s.passEnc) : (s.pass || '');
+  if (helperReady) { // Windows: the native helper's .NET SMTP client
+    const b = x => Buffer.from(String(x ?? ''), 'utf8').toString('base64');
+    return new Promise(resolve => {
+      const id = String(++hid);
+      hpending.set('M' + id, resolve);
+      helper.stdin.write(`M ${id} ${b(s.host)} ${b(s.port || 25)} ${b(s.ssl ? '1' : '0')} ${b(s.user)} ${b(pw)} ${b(s.from)} ${b(s.to)} ${b(subject)} ${b(body)}\n`);
+      setTimeout(() => { if (hpending.delete('M' + id)) resolve({ ok: false, error: 'timeout' }); }, 30000);
+    });
+  }
+  return smtpSend({ host: s.host, port: s.port || 25, ssl: !!s.ssl, user: s.user, pass: pw, from: s.from, to: s.to }, subject, body);
 }
 
-// ---- open the GUI: its own app window (Edge/Chrome --app mode, no tabs or address bar) or the default browser ----
+// ---- start at login: Windows per-user Run key (no admin); Linux a systemd user unit (no root). ----
+const RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
+const regRun = args => new Promise(r => execFile('reg', args, { windowsHide: true, timeout: 10000 }, (e, so) => r({ ok: !e, out: String(so || '') })));
+const AUTOSTART_UNIT = 'pingtracer-linux.service';
+const unitDir = () => path.join(os.homedir(), '.config', 'systemd', 'user');
+const unitFile = () => path.join(unitDir(), AUTOSTART_UNIT);
+function renderUnit() { // pure: the unit file content (unit-tested)
+  const node = JSON.stringify(process.execPath), entry = JSON.stringify(path.join(__dirname, 'server.js'));
+  return `[Unit]
+Description=PingTracer (Linux) - continuous traceroute & ping monitor
+Documentation=https://github.com/JonnyUtah12/ping-tracer-linux
+After=network-online.target
+
+[Service]
+ExecStart=${node} ${entry} --background
+Environment=PP_NO_OPEN=1
+WorkingDirectory=${JSON.stringify(__dirname)}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+`;
+}
+const systemctlUser = args => run('systemctl', ['--user', ...args], { timeout: 15000 });
+async function autostartState() {
+  if (WIN) { if (!sea) return false; const r = await regRun(['query', RUN_KEY, '/v', 'PingTracer']); return r.ok && r.out.includes(process.execPath); }
+  if (!LINUX) return false;
+  const r = await systemctlUser(['is-enabled', AUTOSTART_UNIT]);
+  return r.ok && r.out.trim() === 'enabled';
+}
+async function setAutostart(on) {
+  if (WIN) {
+    if (!sea) return 'only available in the packaged PingTracer.exe';
+    const r = on ? await regRun(['add', RUN_KEY, '/v', 'PingTracer', '/t', 'REG_SZ', '/d', `"${process.execPath}" --background`, '/f']) : await regRun(['delete', RUN_KEY, '/v', 'PingTracer', '/f']);
+    return r.ok || !on ? null : 'could not write the Run registry key';
+  }
+  if (!LINUX) return 'autostart is only available on Windows and Linux';
+  const probe = await systemctlUser(['is-enabled', AUTOSTART_UNIT]);
+  if (probe.missing) return 'systemctl is not installed; autostart needs systemd';
+  if (!probe.ok && /Failed to connect|dbus/i.test(probe.err + probe.out)) return 'no systemd user session (over SSH? enable with: sudo loginctl enable-linger ' + (process.env.USER || os.userInfo().username) + ')';
+  if (on) {
+    try {
+      fs.mkdirSync(unitDir(), { recursive: true });
+      writeIfChanged(unitFile(), Buffer.from(renderUnit()));
+    } catch (e) { return 'cannot write ' + unitFile() + ': ' + e.message; }
+  }
+  const r = await systemctlUser(['daemon-reload']);
+  const e = await systemctlUser([on ? 'enable' : 'disable', AUTOSTART_UNIT]);
+  if (on && !e.ok) { try { fs.rmSync(unitFile(), { force: true }); await systemctlUser(['daemon-reload']); } catch {} return 'systemctl enable failed: ' + (e.err || e.out).slice(0, 200); }
+  return null;
+}
+
+// ---- open the GUI: its own app window (Chrome/Edge --app mode, no tabs or address bar) or the default browser ----
+const BROWSER_APPS = ['google-chrome', 'google-chrome-stable', 'chromium-browser', 'chromium', 'microsoft-edge', 'microsoft-edge-stable'];
 function openUi(done) {
   const url = `http://127.0.0.1:${PORT}`, cb = done || (() => {});
-  if (settings.openMode !== 'browser' && WIN) {
-    const pf = [process.env['ProgramFiles(x86)'], process.env.ProgramFiles, process.env.LOCALAPPDATA].filter(Boolean);
-    const cands = pf.flatMap(b => [path.join(b, 'Microsoft/Edge/Application/msedge.exe'), path.join(b, 'Google/Chrome/Application/chrome.exe')]);
-    const exe = cands.find(f => fs.existsSync(f));
-    if (exe) {
-      try { // dedicated profile so this is a separate window/process and never touches the user's browser sessions
-        const c = spawn(exe, [`--app=${url}`, `--user-data-dir=${path.join(DATA_DIR, 'window-profile')}`, '--no-first-run', '--no-default-browser-check', '--window-size=1280,820'], { detached: true, stdio: 'ignore', windowsHide: false });
-        c.unref(); return cb();
-      } catch {}
+  if (settings.openMode !== 'browser') {
+    if (WIN) {
+      const pf = [process.env['ProgramFiles(x86)'], process.env.ProgramFiles, process.env.LOCALAPPDATA].filter(Boolean);
+      const cands = pf.flatMap(b => [path.join(b, 'Microsoft/Edge/Application/msedge.exe'), path.join(b, 'Google/Chrome/Application/chrome.exe')]);
+      const exe = cands.find(f => fs.existsSync(f));
+      if (exe) {
+        try { // dedicated profile so this is a separate window/process and never touches the user's browser sessions
+          const c = spawn(exe, [`--app=${url}`, `--user-data-dir=${path.join(DATA_DIR, 'window-profile')}`, '--no-first-run', '--no-default-browser-check', '--window-size=1280,820'], { detached: true, stdio: 'ignore', windowsHide: false });
+          c.unref(); return cb();
+        } catch {}
+      }
+    } else if (LINUX) {
+      const dirs = ['/usr/bin', '/bin', '/usr/local/bin', '/snap/bin', path.join(os.homedir(), '.local/bin')];
+      const exe = BROWSER_APPS.flatMap(n => dirs.map(d => path.join(d, n))).find(f => fs.existsSync(f));
+      if (exe) { // dedicated profile: a separate app window, never touching the user's browser sessions
+        try {
+          const c = spawn(exe, [`--app=${url}`, `--user-data-dir=${path.join(DATA_DIR, 'window-profile')}`, '--no-first-run', '--no-default-browser-check', '--window-size=1280,820'], { detached: true, stdio: 'ignore' });
+          c.unref(); return cb();
+        } catch {}
+      }
     }
   }
-  execFile('cmd', ['/c', 'start', '', url], { windowsHide: true }, () => cb());
+  if (WIN) execFile('cmd', ['/c', 'start', '', url], { windowsHide: true }, () => cb());
+  else execFile('xdg-open', [url], () => cb()); // xdg-open missing (headless server) simply does nothing; the URL is printed at startup
 }
 
 // ---- system tray (Windows exe): hides the console, shows alerts as balloons, menu Open/Pause/Quit ----
@@ -325,16 +502,182 @@ function helperProto(kind, host, port, timeoutMs, size, ttl) {
     setTimeout(() => { if (hpending.delete(id)) resolve(null); }, timeoutMs + 3000);
   });
 }
+// ---- built-in TCP/UDP probes (Linux / non-Windows): the portable replacement for the C# helper. ----
+// Same state vocabulary as the helper: ok (handshake completed) | refused (RST / ICMP port unreachable) |
+// unreach (network/host unreachable) | timeout (no answer: TTL exceeded en route, filtered port, down host).
+// Intermediate ICMP Time-Exceeded sources are invisible to user-mode sockets on Linux exactly as on Windows,
+// so hop attribution keeps using the ICMP probes — same semantics as the Windows helper path (docs §12).
+// Unprivileged: ordinary TCP connect() and connected UDP; no raw sockets, no root.
+function tcpProbeBuiltin(host, port, timeoutMs, ttl) {
+  return new Promise(resolve => {
+    const s = new (require('net').Socket)({ allowHalfOpen: false });
+    const t0 = process.hrtime.bigint();
+    let done = false;
+    const fin = st => {
+      if (done) return; done = true;
+      clearTimeout(timer); try { s.destroy(); } catch {}
+      resolve({ st, ip: st === 'ok' || st === 'refused' ? host : null, ms: Math.round(Number(process.hrtime.bigint() - t0) / 1e5) / 10 });
+    };
+    const timer = setTimeout(() => fin('timeout'), Math.max(100, timeoutMs));
+    s.once('connect', () => fin('ok'));
+    s.once('error', e => fin(e && e.code === 'ECONNREFUSED' ? 'refused' : e && /EHOST|ENET|EADDRNOTAVAIL|EACCES/.test(String(e.code)) ? 'unreach' : 'timeout'));
+    try { s.connect(port, host); } catch { fin('unreach'); return; }
+    if (ttl) { try { s.setTTL(ttl); } catch {} } // IP_TTL applies to the SYN; loopback ignores it, like Windows' helper
+  });
+}
+function udpProbeBuiltin(host, port, timeoutMs, ttl, size) {
+  return new Promise(resolve => {
+    const dgram = require('dgram'), s = dgram.createSocket({ type: 'udp4', reuseAddr: false });
+    const t0 = process.hrtime.bigint();
+    let done = false;
+    const fin = st => {
+      if (done) return; done = true;
+      clearTimeout(timer); try { s.close(); } catch {}
+      resolve({ st, ip: st === 'ok' || st === 'refused' ? host : null, ms: Math.round(Number(process.hrtime.bigint() - t0) / 1e5) / 10 });
+    };
+    const timer = setTimeout(() => fin('timeout'), Math.max(100, timeoutMs));
+    s.on('error', e => fin(e && e.code === 'ECONNREFUSED' ? 'refused' : e && /EHOST|ENET|EADDRNOTAVAIL|EACCES/.test(String(e.code)) ? 'unreach' : 'timeout'));
+    s.on('message', () => fin('ok'));
+    // bind before setTTL: uv applies IP_TTL only once the socket exists (Node >= 26 throws EBADF otherwise).
+    // Loopback-IPv4 targets bind on 127.0.0.1: a socket bound to 0.0.0.0 receives the reply sent from
+    // 127.0.0.1, so the probe must bind the matching address. Node >= 26 requires the full send signature.
+    const laddr = require('net').isIPv4(host) ? host : '0.0.0.0'; // net.isIPv4: net.isIPv4String does not exist in Node >= 24 (it threw here)
+    const payload = Buffer.alloc(Math.max(1, Math.min(1400, size ?? 56)), 0x61);
+    const go = () => {
+      try { if (ttl) s.setTTL(ttl); } catch {}
+      // No connect(): a connected dgram socket rejects send() with an explicit destination (EISCONN on Node 26),
+      // so the datagram never left. The socket is bound to laddr above, which is what attributes the reply.
+      try { s.send(payload, 0, payload.length, port, host, err => { if (err) fin('timeout'); }); } catch { fin('unreach'); }
+    };
+    try { s.bind(0, laddr, go); } catch { try { s.bind(0, go); } catch { fin('unreach'); } }
+  });
+}
+const protoProbe = (kind, host, port, timeoutMs, size, ttl) => helperReady ? helperProto(kind, host, port, timeoutMs, size, ttl)
+  : (kind === 'tcp' ? tcpProbeBuiltin(host, port, timeoutMs, ttl) : udpProbeBuiltin(host, port, timeoutMs, ttl, size));
+// ---- built-in ICMP probe (Linux): the unprivileged replacement for TTL-limited ping. ----
+// Linux's ping (iputils) has no TTL option, so TTL-limited probes use an ICMP datagram socket
+// (net.ipv4.ping_group_range, open to all users by default on Ubuntu — no root, no raw sockets).
+// A TTL-expired reply surfaces as an EHOSTUNREACH socket error; its latency is the hop RTT. The kernel
+// does not expose which router sent the Time-Exceeded (same attribution limit as the Windows helper path),
+// so hop addresses come from tracepath discovery and ICMP echo replies. If ping sockets are blocked
+// (containers with default sysctls), st 'unpriv' is returned and the caller degrades honestly.
+const dgramMod = require('dgram');
+let icmpSeq = 0;
+function icmpChecksum(buf) { let s = 0; for (let i = 0; i + 1 < buf.length; i += 2) s += (buf[i] << 8) + buf[i + 1]; if (buf.length & 1) s += buf[buf.length - 1] << 8; s = (s >>> 16) + (s & 0xffff); s += s >>> 16; return ~s & 0xffff; }
+function icmpProbeBuiltin(host, ttl, timeoutMs, size) {
+  return new Promise(resolve => {
+    let s; try { s = dgramMod.createSocket({ type: 'ipv4', protocol: 'ICMP' }); } catch { return resolve({ st: 'unpriv', ip: null, ms: null }); }
+    const t0 = process.hrtime.bigint();
+    let done = false;
+    const fin = r => {
+      if (done) return; done = true;
+      clearTimeout(timer); try { s.close(); } catch {}
+      resolve({ st: r.st, ip: r.ip || null, ms: Math.round(Number(process.hrtime.bigint() - t0) / 1e5) / 10 });
+    };
+    const timer = setTimeout(() => fin({ st: 'timeout' }), Math.max(100, timeoutMs));
+    const mapErr = e => e && e.code === 'ECONNREFUSED' ? 'refused'
+      : e && e.code === 'EHOSTUNREACH' ? 'ttl' // Time Exceeded en route and net unreachable share the errno; at intermediate TTLs this is TTL expiry, at the destination a silent loss
+      : e && (e.code === 'EACCES' || e.code === 'EPERM') ? 'unpriv' : 'timeout';
+    s.on('error', e => fin({ st: mapErr(e) }));
+    const seq = ++icmpSeq & 0xffff, plen = Math.max(0, Math.min(1400, (size || 56) - 8));
+    const p = Buffer.alloc(8 + plen, 0x61); p[0] = 8; p.writeUInt16BE(icmpChecksum(p), 2); p.writeUInt16BE(seq, 6);
+    s.on('message', (msg, rinfo) => { if (msg.length >= 8 && msg[0] === 0 && msg.readUInt16BE(6) === seq) fin({ st: 'ok', ip: rinfo.address }); }); // kernel delivers only replies for this socket's id
+    try { s.bind(0, require('net').isIPv4(host) ? host : '0.0.0.0', () => { // bind before setTTL: uv applies IP_TTL only once the socket exists (Node >= 26 throws EBADF otherwise)
+      try { s.setTTL(ttl); } catch {}
+      try { s.connect(0, host, err => { if (err) fin({ st: /EACCES|EPERM/.test(String(err.code)) ? 'unpriv' : mapErr(err) }); }); } catch (e) { fin({ st: /EACCES|EPERM/.test(String(e.code)) ? 'unpriv' : 'unreach' }); return; }
+      try { s.send(p, 0, p.length, 1, host, err => { if (err) fin({ st: /EACCES|EPERM/.test(String(err.code)) ? 'unpriv' : mapErr(err) }); }); } catch { fin({ st: 'unreach' }); } // port 1: Node validates port > 0; the kernel ignores the port on connected ICMP sockets
+    }); } catch (e) { fin({ st: /EACCES|EPERM/.test(String(e.code)) ? 'unpriv' : 'unreach' }); }
+  });
+}
+// ---- route discovery (Linux): tracepath (iproute2, installed on every Ubuntu) reports each responding
+// router's address and RTT unprivileged; hop addresses are seeded from it because the ICMP socket cannot
+// attribute Time-Exceeded sources. A missing utility is reported as 'not installed', never as a network failure (spec §4).
+function parseTracepathLine(l) { // one 'tracepath -n' line -> {ttl, silent} | {ttl, ip, ms, reached} | null
+  const m = /^\s*(\d+):\s+(.+)$/.exec(l); if (!m) return null;
+  if (/no reply/i.test(m[2])) return { ttl: +m[1], silent: true };
+  const ipm = /(\d{1,3}(?:\.\d{1,3}){3})/.exec(m[2]);
+  const msm = /\b([\d.]+)\s*m?s/.exec(m[2]);
+  if (ipm && msm) return { ttl: +m[1], ip: ipm[1], ms: parseFloat(msm[1]), reached: /\breached\b/.test(m[2]) };
+  return null;
+}
+function parseTracepath(text) { // tracepath -n output -> {hops:[{ttl, ip, ms}], finalTtl|null}
+  // iputils prints '1:  192.168.1.1  0.456ms', '13:  1.2.3.4 (sin1)  6.8ms reached', '1:  gw (192.168.1.1) 0.4ms';
+  // 'no reply' lines are silent hops. Take the first IPv4 token and first RTT on each numbered line.
+  const hops = []; let finalTtl = null;
+  for (const l of String(text || '').split(/\r?\n/)) {
+    const h = parseTracepathLine(l); if (!h || h.silent) continue;
+    hops.push({ ttl: h.ttl, ip: h.ip, ms: h.ms });
+    if (h.reached) finalTtl = h.ttl;
+  }
+  return { hops, finalTtl };
+}
+async function tracepathProbe(host, maxHops, timeoutMs, onHop) {
+  const sec = Math.max(1, Math.ceil(timeoutMs / 1000));
+  // iputils tracepath has no per-probe timeout flag (and no argument-order tolerance), and it block-buffers
+  // stdout on a pipe: execFile + a cap that fires mid-discovery returned NOTHING (verified on Ubuntu), so the
+  // whole route was lost and the round had no hops to probe. Run it line-buffered (stdbuf -oL) and consume
+  // stdout as it arrives: hops reach the UI while discovery runs, and a capped run still yields its hops.
+  const args = ['-n', '-m', String(Math.max(1, maxHops)), '-l', '56', host];
+  const cap = Math.max(45000, (maxHops + 3) * sec * 1000);
+  const seen = new Set();
+  const onLine = l => { const h = parseTracepathLine(l); if (h && !h.silent && h.ip && !seen.has(h.ttl)) { seen.add(h.ttl); try { onHop && onHop(h); } catch {} } };
+  let r = await runStream('stdbuf', ['-oL', 'tracepath'].concat(args), onLine, { timeout: cap });
+  if (r.missing) r = await runStream('tracepath', args, onLine, { timeout: cap }); // stdbuf is coreutils: fall back if it is absent
+  const p = parseTracepath(r.out); return Object.assign(p, { err: r.err, missing: r.missing }); // {hops, finalTtl, err, missing}
+}
+// ---- traceroute engine (Linux): when the ICMP datagram socket is unavailable (Node >= 24 removed
+// dgram protocol sockets), one unprivileged 'traceroute' run per round carries every hop's address, RTT
+// and loss ('*'). One probe per hop (-q 1), -z spacing to respect router rate limits. Missing utility
+// is reported as 'not installed' (spec §4), never as a network failure.
+function parseTraceroute(text, destIp) { // 'traceroute -n -q 1' output -> {hops:[{ttl, ip, ms|null}], finalTtl}
+  const hops = [];
+  for (const l of String(text || '').split(/\r?\n/)) {
+    const m = /^\s*(\d+)\s+(.*)$/.exec(l); if (!m) continue;
+    const ipm = /\((\d{1,3}(?:\.\d{1,3}){3})\)|^(\d{1,3}(?:\.\d{1,3}){3})/.exec(m[2]);
+    const ip = ipm ? (ipm[1] || ipm[2]) : '';
+    const msm = /\b([\d.]+)\s*ms/.exec(m[2]);
+    hops.push({ ttl: +m[1], ip, ms: msm ? parseFloat(msm[1]) : null }); // '*' / no rtt = loss this round
+  }
+  const dest = destIp ? hops.filter(h => h.ip === destIp) : [];
+  return { hops, finalTtl: dest.length ? dest[dest.length - 1].ttl : null };
+}
+async function tracerouteProbe(host, maxHops, timeoutMs) {
+  const wSec = Math.max(1, Math.ceil(timeoutMs / 1000));
+  const r = await run('traceroute', ['-n', '-q', '1', '-m', String(Math.max(1, maxHops)), '-w', String(wSec), '-z', '15', host], { timeout: Math.min(120000, (maxHops + 3) * wSec * 1000) });
+  return Object.assign(parseTraceroute(r.out, require('net').isIP(host) ? host : ''), { err: r.err, missing: r.missing });
+}
+// Engine ladder for Linux ICMP targets: built-in ICMP socket (fast, exact per-hop RTT) > traceroute
+// (per-round subprocess) > tracepath discovery + destination ping. Detected once at startup; never
+// requires root; a missing utility degrades the engine and says so, it does not fake packet loss.
+let LINUX_ENGINE = null; // 'icmp' | 'traceroute' | 'ping'
+async function detectLinuxEngine() {
+  if (!LINUX) return;
+  const t = await icmpProbeBuiltin('127.0.0.1', 255, 1200); // loopback echo: proves ping sockets work
+  if (t.st === 'ok') { LINUX_ENGINE = 'icmp'; return; }
+  const tr = await run('traceroute', ['-n', '-q', '1', '-m', '4', '-w', '1', '127.0.0.1'], { timeout: 8000 });
+  LINUX_ENGINE = tr.missing ? 'ping' : 'traceroute';
+  if (tr.missing) console.warn('PingTracer: traceroute: not installed — continuous per-hop tracing unavailable (sudo apt install traceroute); falling back to tracepath + ping');
+}
 async function probe(host, ttl, timeoutMs, size) {
   if (helperReady) {
     const r = await helperProbe(host, ttl, timeoutMs, size);
     if (r) return r.st === 'ok' || r.st === 'ttl' ? { ip: r.ip, ms: r.ms, final: r.st === 'ok' } : { ip: null, ms: null, final: false };
   }
-  return pingProbe(host, ttl, timeoutMs);
+  if (LINUX) { // built-in unprivileged ICMP TTL probes; system ping only for destination-range TTLs
+    const r = await icmpProbeBuiltin(host, ttl, timeoutMs, size);
+    if (r.st === 'ok') return { ip: r.ip, ms: r.ms, final: true };
+    if (r.st === 'ttl') return { ip: null, ms: r.ms, final: false };
+    if (r.st === 'unpriv') return ttl >= 13 ? pingProbe(host, ttl, timeoutMs, size) : null; // honest degradation: no TTL data, destination still measured
+    return { ip: null, ms: null, final: false };
+  }
+  return pingProbe(host, ttl, timeoutMs, size);
 }
-function pingProbe(host, ttl, timeoutMs) {
+function pingProbe(host, ttl, timeoutMs, size) {
+  // Linux iputils ping has no TTL option (-t is TOS), so it is used for destination probes only (full TTL);
+  // TTL-limited probes on Linux go through the built-in ICMP socket below (spec §4: missing capability never
+  // masquerades as a network failure — the caller decides which TTLs pingProbe may serve).
   const args = WIN ? ['-n', '1', '-w', String(timeoutMs), '-i', String(ttl), host]
-                   : ['-n', '-c', '1', '-W', String(Math.ceil(timeoutMs / 1000)), '-t', String(ttl), host];
+                   : ['-n', '-c', '1', '-W', String(Math.max(1, Math.ceil(timeoutMs / 1000))), '-s', String(Math.max(16, Math.min(65507, size || 56))), host];
   return new Promise(resolve => {
     const t0 = process.hrtime.bigint();
     execFile('ping', args, { timeout: timeoutMs + 3000, windowsHide: true }, (err, stdout) => {
@@ -409,24 +752,67 @@ async function runRound(t) {
   if (t.busy) return;
   t.busy = true;
   const cfg = cfgOf(t);
+  // Linux route discovery: seed hop addresses/RTTs from tracepath (the ICMP socket cannot attribute
+  // Time-Exceeded sources, and Linux ping has no TTL option). One seed per start/retrace; missing
+  // utility is warned as 'not installed', never treated as a network failure (spec §4).
+  if (LINUX && !helperReady && !t.finalTtl && !t.routeSeed) {
+    t.routeSeed = true;
+    // Hops land as tracepath answers each TTL, not only when the whole discovery finishes: on a real link a
+    // 30-hop tracepath runs ~80 s, so a blocking seed left the target showing nothing at all (and, with the
+    // 'ping' engine, probing nothing) for the entire discovery.
+    const seedHop = h => {
+      if (t.hops.find(x => x.ttl === h.ttl)) return;
+      const hop = { ttl: h.ttl, ip: h.ip, name: '', samples: [{ t: Date.now(), ms: h.ms }] };
+      t.hops.push(hop); histAdd(t.id, h.ttl, Date.now(), h.ms);
+      rdns(h.ip).then(n => { if (n) hop.name = n; });
+    };
+    const tp = await tracepathProbe(t.ip || t.host, cfg.maxHops, cfg.timeoutMs, seedHop);
+    if (tp.missing) console.warn('PingTracer: ' + tp.err + ' — hop addresses unavailable (sudo apt install iproute2)');
+    t.hops.sort((a, b) => a.ttl - b.ttl);
+    t.hops.forEach(h => { if (h.ip && !h.name) rdns(h.ip).then(n => { if (n) h.name = n; }); });
+    if (tp.hops.length) t.finalTtl = tp.finalTtl != null ? tp.finalTtl : tp.hops.length + 1; // 'reached' line, else one TTL beyond the last responding router
+  }
   const upto = t.finalTtl ? t.finalTtl : cfg.maxHops;
   let ttls = t.mode === 'final' && t.finalTtl ? [t.finalTtl] : Array.from({ length: upto }, (_, i) => i + 1);
-  if (!helperReady) await calibrate();
+  // 'ping' engine (no ICMP socket, no traceroute): no TTL control exists, so each round is one destination
+  // ping; the route (addresses + discovery RTTs) comes from the tracepath seed above.
+  if (LINUX && !helperReady && LINUX_ENGINE === 'ping') ttls = [t.finalTtl || (t.hops.length ? t.hops.length + 1 : 1)];
+  if (!helperReady && WIN) await calibrate();
   // TCP/UDP route tracing: TTL-limited protocol probes determine the path length and the destination state
   // (connection succeeded / connection refused / no response). While the path is unknown the protocol probes run
   // at every TTL; once the final TTL is known only the destination is probed with the protocol. Intermediate hop
-  // addresses are attributed with the ICMP probes: Windows user-mode TCP/UDP sockets cannot report which router
-  // sent an ICMP Time Exceeded. Needs the native helper; without it these targets fall back to ICMP.
-  const px = (t.proto === 'tcp' || t.proto === 'udp') && helperReady;
-  const pxTtl = px ? (t.finalTtl ? [t.finalTtl] : ttls) : [];
-  const pxP = pxTtl.map(ttl => ({ ttl, p: helperProto(t.proto, t.ip || t.host, t.port || (t.proto === 'tcp' ? 443 : 53), cfg.timeoutMs, cfg.packetSize, ttl) }));
+  // addresses are attributed with the ICMP probes: user-mode TCP/UDP sockets (Windows and Linux alike) cannot
+  // report which router sent an ICMP Time Exceeded. On Windows this needs the native helper; on Linux the
+  // built-in Node probes above are used. On macOS (no helper, no built-in path) these targets fall back to ICMP.
+  const px = (t.proto === 'tcp' || t.proto === 'udp') && (helperReady || LINUX);
+  // Linux TCP has no setTTL on user sockets, so a TCP probe always leaves at full TTL: sweeping TTLs would
+  // "discover" the destination at TTL 1. The seeded finalTtl (tracepath length+1) is authoritative there.
+  const pxTtl = px ? (t.finalTtl ? [t.finalTtl] : (LINUX && !helperReady && t.proto === 'tcp' ? [] : ttls)) : [];
+  const pxP = pxTtl.map(ttl => ({ ttl, p: protoProbe(t.proto, t.ip || t.host, t.port || (t.proto === 'tcp' ? 443 : 53), cfg.timeoutMs, cfg.packetSize, ttl) }));
   // Spread the round's probes out (up to 20 ms apart, within 40% of the interval) instead of firing every hop at once:
   // home routers rate-limit ICMP replies, and simultaneous bursts showed up as false packet loss on the first hops.
-  const spacing = Math.min(20, Math.floor(cfg.intervalMs * 0.4 / Math.max(1, ttls.length)));
-  const results = await Promise.all(ttls.map(async (ttl, i) => {
-    if (i && spacing) await new Promise(r => setTimeout(r, i * spacing));
-    return { ttl, r: await probe(t.ip || t.host, ttl, cfg.timeoutMs, cfg.packetSize) };
-  }));
+  let results;
+  if (LINUX && !helperReady && LINUX_ENGINE === 'traceroute' && t.mode === 'final' && t.finalTtl) {
+    results = [{ ttl: t.finalTtl, r: await pingProbe(t.ip || t.host, t.finalTtl, cfg.timeoutMs, cfg.packetSize) }]; // final-only mode: cheap destination ping
+  } else if (LINUX && !helperReady && LINUX_ENGINE === 'traceroute') {
+    const tr = await tracerouteProbe(t.ip || t.host, cfg.maxHops, cfg.timeoutMs);
+    if (tr.missing) LINUX_ENGINE = 'ping'; // missing utility: degrade next rounds to tracepath+ping, never fake loss (spec §4)
+    const finTtl = tr.finalTtl != null ? tr.finalTtl : (t.finalTtl || tr.hops.length + 1);
+    results = tr.hops.map(h => ({ ttl: h.ttl, r: { ip: h.ip || null, ms: h.ms, final: h.ttl === finTtl && h.ms != null } }));
+    if (tr.finalTtl == null && tr.hops.length) results.push({ ttl: finTtl, r: { ip: null, ms: null, final: false } }); // silent destination: a loss sample on the destination hop, not a missing hop
+  } else if (LINUX && !helperReady && LINUX_ENGINE === 'ping') {
+    // Last rung of the engine ladder: iputils 'ping' at the destination only (it has no TTL option, so it cannot
+    // address routers). probe() must not be used here: on Node >= 24 the built-in ICMP socket is gone, probe()
+    // returns null for every hop, and the target would silently collect zero samples forever.
+    const ttl = ttls[0] || 1;
+    results = [{ ttl, r: await pingProbe(t.ip || t.host, ttl, cfg.timeoutMs, cfg.packetSize) }];
+  } else {
+    const spacing = Math.min(20, Math.floor(cfg.intervalMs * 0.4 / Math.max(1, ttls.length)));
+    results = await Promise.all(ttls.map(async (ttl, i) => {
+      if (i && spacing) await new Promise(r => setTimeout(r, i * spacing));
+      return { ttl, r: await probe(t.ip || t.host, ttl, cfg.timeoutMs, cfg.packetSize) }
+    }));
+  }
   if (px) {
     const prs = []; for (const x of pxP) prs.push({ ttl: x.ttl, r: await x.p });
     // the smallest TTL at which the destination answers the protocol is the protocol-level path length
@@ -445,12 +831,13 @@ async function runRound(t) {
   const now = Date.now();
   let fin = t.finalTtl;
   for (const { ttl, r } of results.sort((a, b) => a.ttl - b.ttl)) {
-    if (r.final && (!fin || ttl < fin)) fin = ttl;
+    if (r && r.final && (!fin || ttl < fin)) fin = ttl;
   }
   // when discovering, drop hops beyond final
   if (fin) t.finalTtl = fin;
   for (const { ttl, r } of results) {
     if (t.finalTtl && ttl > t.finalTtl) continue;
+    if (!r) continue; // no data (missing capability) — keep the hop as-is, never record it as loss (spec §4)
     let h = t.hops.find(h => h.ttl === ttl);
     if (!h) { h = { ttl, ip: '', name: '', samples: [] }; t.hops.push(h); t.hops.sort((a, b) => a.ttl - b.ttl); }
     if (r.ip && r.ip !== h.ip) { h.ip = r.ip; h.name = await rdns(r.ip); }
@@ -668,7 +1055,8 @@ const send = (res, code, body, type = 'application/json') => {
   h['Content-Length'] = buf.length; res.writeHead(code, h); res.end(buf);
 };
 const MAX_BODY = 32 * 1024 * 1024, MAX_TARGETS = 64; // request bodies are capped; a sane ceiling on open targets keeps probe load bounded
-const readBody = req => new Promise(r => { const chunks = []; let n = 0; req.on('data', c => { n += c.length; if (n > MAX_BODY) { req.destroy(); r({}); } else chunks.push(c); }); req.on('end', () => { try { r(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')); } catch { r({}); } }); req.on('error', () => r({})); });
+const readBody = req => new Promise(r => { const chunks = []; let n = 0; req.on('data', c => { n += c.length; if (n > MAX_BODY) { r({}); req.resume(); } // over the cap: resolve, discard the rest (never destroy mid-write: that RSTs the client, spec-safe 413)
+  else chunks.push(c); }); req.on('end', () => { try { r(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')); } catch { r({}); } }); req.on('error', () => r({})); });
 const METRICS = ['avg', 'loss', 'jitter', 'mos'], ACTIONS = ['notify', 'command', 'webhook', 'email'];
 function sanitizeRules(arr) { // alert rules arrive from the browser: whitelist every field
   if (!Array.isArray(arr)) return [];
@@ -707,7 +1095,7 @@ const validHost =h => /^[a-zA-Z0-9]([a-zA-Z0-9.\-_]{0,251}[a-zA-Z0-9])?$/.test(h
 const portOf = v => { if (v == null || v === '') return null; const n = +v; return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : undefined; };
 const PORT_ERR = 'invalid port: enter a whole number between 1 and 65535';
 
-// ---- Wi-Fi monitoring (netsh wlan; English-locale output) ----
+// ---- Wi-Fi monitoring: Windows netsh wlan (English-locale output); Linux iw (link) + nmcli (scan) ----
 const kv = text => text.split(/\r?\n/).map(l => /^\s*([^:]+?)\s+:\s(.*)$/.exec(l)).filter(Boolean).map(m => [m[1].trim(), m[2].trim()]);
 function parseWlanInterfaces(text) { // -> [{name, state, ssid, bssid, signal, channel, radio, rx, tx, auth, ...}]
   const out = []; let cur = null;
@@ -737,7 +1125,63 @@ function parseWlanNetworks(text) { // -> [{ssid, auth, bssid, signal, radio, ban
 }
 const wifi = { timer: null, history: [], current: null, error: null, neighbors: [], scanAt: 0 };
 const netsh = args => new Promise(r => execFile('netsh', args, { windowsHide: true, timeout: 15000 }, (e, so, se) => r({ err: e ? String(so || se || e.message).trim() : null, out: String(so || '') })));
+// Linux helpers: iw reports the current link (works unprivileged); scans use nmcli (NetworkManager) because a
+// raw iw scan needs CAP_NET_ADMIN. All pure parsers are exported and unit-tested.
+const dbmToPct = dbm => Math.max(0, Math.min(100, Math.round(((+dbm) + 100) * 2))); // Windows netsh reports %, iw reports dBm
+function freqToChannel(f) {
+  f = +f;
+  if (f >= 2412 && f <= 2472) return Math.round((f - 2407) / 5);
+  if (f === 2484) return 14;
+  if (f >= 5170 && f <= 5895) return Math.round((f - 5000) / 5);
+  if (f >= 5955 && f <= 7115) return Math.round((f - 5950) / 5);
+  return null;
+}
+const bandOf = f => f >= 2412 && f <= 2484 ? '2.4 GHz' : f >= 5170 && f <= 5895 ? '5 GHz' : f >= 5955 && f <= 7115 ? '6 GHz' : '';
+function wifiLinuxDev() { // first 802.11 interface in /sys/class/net, or null
+  try { return fs.readdirSync('/sys/class/net').find(n => fs.existsSync(path.join('/sys/class/net', n, 'wireless'))) || null; } catch { return null; }
+}
+function parseIwLink(dev, text) { // 'iw dev <dev> link' output -> current interface record (netsh-shaped)
+  const conn = /Connected to\s+([0-9a-fA-F:]{17})/i.exec(text);
+  if (!conn) return { name: dev, state: 'disconnected' };
+  const ssid = /SSID:\s*(.+)/.exec(text), freq = /frequency:\s*(\d+)/.exec(text), sig = /signal(?:\s+level)?:\s*(-?\d+(?:\.\d+)?)\s*dBm/i.exec(text);
+  const tx = /TX bitrate:?\s*([\d.]+)/i.exec(text), rx = /RX bitrate:?\s*([\d.]+)/i.exec(text);
+  const f = freq ? +freq[1] : null;
+  return { name: dev, state: 'connected', ssid: ssid ? ssid[1].trim() : '', bssid: conn[1], signal: sig ? dbmToPct(sig[1]) : null, signalDbm: sig ? +sig[1] : null,
+    channel: f != null ? freqToChannel(f) : null, band: f != null ? bandOf(f) : '', radio: '', rx: rx ? +rx[1] : null, tx: tx ? +tx[1] : null };
+}
+function parseNmcliScan(text) { // 'nmcli -t -f SSID,BSSID,SIGNAL,CHANNEL,FREQ,SECURITY dev wifi list' -> netsh-shaped neighbors
+  // Fields are ':'-separated; SSID escapes its colons as '\:', and the BSSID field itself contains colons.
+  const out = [];
+  for (const line of text.split(/\r?\n/)) {
+    const m = /^((?:[^:\\]|\\.)+):([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5}):(\d+):(\d+):(\d+):(.*)$/.exec(line);
+    if (!m) continue; // device header line ("wlp0s20f0:"), blanks, malformed
+    const ssid = m[1].replace(/\\:/g, ':').replace(/\\\\/g, '\\');
+    const f = +m[5];
+    out.push({ ssid, bssid: m[2].toUpperCase(), signal: +m[3] || 0, channel: +m[4] || freqToChannel(f), band: bandOf(f), radio: '', auth: m[6] || '' });
+  }
+  return out;
+}
+function parseIpNeigh(text) { // 'ip -4 neigh show' -> [{ip, mac}] (lladdr entries only, netsh arp -a shape)
+  const out = [];
+  for (const l of text.split(/\r?\n/)) {
+    const m = /^\s*(\d+\.\d+\.\d+\.\d+)\s+dev\s+\S+(?:\s+lladdr\s+([0-9a-fA-F:]{17}))?/.exec(l);
+    if (m && m[2]) out.push({ ip: m[1], mac: m[2].toUpperCase().replace(/-/g, ':') });
+  }
+  return out;
+}
 async function wifiPoll() {
+  if (LINUX) {
+    const dev = wifiLinuxDev();
+    if (!dev) { wifi.error = 'No wireless interface found'; wifi.current = null; return; }
+    const r = await run('iw', ['dev', dev, 'link']);
+    if (r.missing) { wifi.error = 'iw: not installed — sudo apt install iw'; wifi.current = null; return; }
+    const cur = parseIwLink(dev, r.out); // 'iw dev X link' exits 1 with "Not connected" — a state, not an error
+    if (r.err && cur.state !== 'disconnected') { wifi.error = r.err; wifi.current = null; return; }
+    wifi.error = null;
+    wifi.current = cur;
+    if (cur && cur.signal != null) { wifi.history.push({ t: Date.now(), signal: cur.signal, rx: cur.rx || null, tx: cur.tx || null, ssid: cur.ssid || '' }); if (wifi.history.length > 5000) wifi.history.shift(); }
+    return;
+  }
   const r = await netsh(['wlan', 'show', 'interfaces']);
   if (r.err) { wifi.error = r.err.split('\n')[0]; wifi.current = null; return; }
   wifi.error = null;
@@ -745,11 +1189,19 @@ async function wifiPoll() {
   if (!ifc.length) wifi.error = 'No wireless interface found';
   if (wifi.current && wifi.current.signal != null) { wifi.history.push({ t: Date.now(), signal: wifi.current.signal, rx: wifi.current.rx || null, tx: wifi.current.tx || null, ssid: wifi.current.ssid || '' }); if (wifi.history.length > 5000) wifi.history.shift(); }
 }
-function wifiStart() { if (wifi.timer || !WIN) return; wifiPoll(); wifi.timer = setInterval(wifiPoll, 5000); }
+function wifiStart() { if (wifi.timer || !(WIN || LINUX)) return; wifiPoll(); wifi.timer = setInterval(wifiPoll, 5000); }
 function wifiStop() { clearInterval(wifi.timer); wifi.timer = null; }
 async function wifiScan() {
   if (Date.now() - wifi.scanAt < 8000) return;
-  wifi.scanAt = Date.now(); const r = await netsh(['wlan', 'show', 'networks', 'mode=bssid']);
+  wifi.scanAt = Date.now();
+  if (LINUX) {
+    const r = await run('nmcli', ['-t', '-f', 'SSID,BSSID,SIGNAL,CHANNEL,FREQ,SECURITY', 'dev', 'wifi', 'list', '--rescan', 'yes']);
+    if (r.missing) { wifi.error = 'nearby-network scan needs nmcli — sudo apt install network-manager'; return; }
+    if (r.err) { wifi.error = 'nmcli scan failed: ' + r.err; return; }
+    wifi.neighbors = parseNmcliScan(r.out).sort((a, b) => (b.signal || 0) - (a.signal || 0));
+    return;
+  }
+  const r = await netsh(['wlan', 'show', 'networks', 'mode=bssid']);
   if (!r.err) wifi.neighbors = parseWlanNetworks(r.out).sort((a, b) => (b.signal || 0) - (a.signal || 0));
 }
 
@@ -817,8 +1269,14 @@ async function lanScan() {
       while (idx < ips.length) { const ip = ips[idx++]; const r = await probe(ip, 64, 500); if (r && r.ms != null && r.ip === ip) { const d = found.get(ip) || (found.set(ip, { ip }), found.get(ip)); d.rtt = r.ms; } lan.progress = Math.round(++done / ips.length * 85); }
     }));
     await Promise.all(side);
-    const arp = await new Promise(r => execFile('arp', ['-a'], { windowsHide: true, timeout: 10000 }, (e, so) => r(String(so || ''))));
-    for (const l of arp.split(/\r?\n/)) { const m = /^\s*(\d+\.\d+\.\d+\.\d+)\s+([0-9a-f]{2}(?:-[0-9a-f]{2}){5})\s+(dynamic|static)/i.exec(l); if (!m) continue; const n = ip2n(m[1]); if (n <= net || n >= net + size - 1) continue; if (/^(ff-ff|01-00-5e)/i.test(m[2])) continue; const d = found.get(m[1]) || (found.set(m[1], { ip: m[1] }), found.get(m[1])); d.mac = m[2].toUpperCase().replace(/-/g, ':'); }
+    if (WIN) {
+      const arp = await new Promise(r => execFile('arp', ['-a'], { windowsHide: true, timeout: 10000 }, (e, so) => r(String(so || ''))));
+      for (const l of arp.split(/\r?\n/)) { const m = /^\s*(\d+\.\d+\.\d+\.\d+)\s+([0-9a-f]{2}(?:-[0-9a-f]{2}){5})\s+(dynamic|static)/i.exec(l); if (!m) continue; const n = ip2n(m[1]); if (n <= net || n >= net + size - 1) continue; if (/^(ff-ff|01-00-5e)/i.test(m[2])) continue; const d = found.get(m[1]) || (found.set(m[1], { ip: m[1] }), found.get(m[1])); d.mac = m[2].toUpperCase().replace(/-/g, ':'); }
+    } else {
+      const r = await run('ip', ['-4', 'neigh', 'show']); // Linux: the kernel neighbour table (iproute2, always installed)
+      if (r.err && !r.missing) lan.error = r.err;
+      for (const e of parseIpNeigh(r.out)) { const n = ip2n(e.ip); if (n <= net || n >= net + size - 1) continue; if (/^(FF-FF|01-00-5E)/i.test(e.mac)) continue; const d = found.get(e.ip) || (found.set(e.ip, { ip: e.ip }), found.get(e.ip)); d.mac = e.mac; }
+    }
     const devs = [...found.values()].filter(d => ip2n(d.ip) > net && ip2n(d.ip) < net + size - 1 && (d.mac || d.rtt != null));
     await Promise.all(devs.map(d => new Promise(r => { const t = setTimeout(r, 1500); dns.reverse(d.ip, (e, n) => { clearTimeout(t); if (!e && n && n.length) d.name = n[0]; r(); }); })));
     devs.forEach(d => { d.vendor = d.mac ? vendorOf(d.mac) : ''; });
@@ -1087,6 +1545,16 @@ async function remoteGate(req, res, u) { // returns the session context, or null
 }
 let webSrv = null;
 function ensureCert() {
+  if (!WIN) { // Linux/macOS: generate a self-signed pair with openssl (standard Ubuntu package); 0600 key
+    const keyF = path.join(DATA_DIR, 'web.key'), certF = path.join(DATA_DIR, 'web.cert');
+    if (fs.existsSync(keyF) && fs.existsSync(certF)) return Promise.resolve({ key: fs.readFileSync(keyF), cert: fs.readFileSync(certF) });
+    return run('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', keyF, '-out', certF, '-days', '1825',
+      '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost,IP:127.0.0.1,IP:::1'], { timeout: 60000 }).then(r => {
+      if (!r.ok) throw new Error('could not create TLS certificate: ' + (r.missing ? 'openssl is not installed — sudo apt install openssl' : r.err));
+      chmod600(keyF);
+      return { key: fs.readFileSync(keyF), cert: fs.readFileSync(certF) };
+    });
+  }
   const pfx = path.join(DATA_DIR, 'web.pfx'), pwf = path.join(DATA_DIR, 'web.pass');
   if (fs.existsSync(pfx) && fs.existsSync(pwf)) return Promise.resolve({ pfx: fs.readFileSync(pfx), passphrase: fs.readFileSync(pwf, 'utf8') });
   const pw = require('crypto').randomBytes(16).toString('hex');
@@ -1118,7 +1586,7 @@ const handle = async (req, res, remote = false) => {
   const focus = +u.searchParams.get('focus') || 0;
   // Access control. Local mode: only same-origin requests to a loopback Host (blocks CSRF and DNS rebinding
   // from web pages, since alert rules can launch programs). Agent mode: shared-token auth on /api.
-  if ((m === 'POST' || m === 'PUT') && +req.headers['content-length'] > MAX_BODY) { res.setHeader('Connection', 'close'); return send(res, 413, { error: 'request too large' }); } // answer cleanly instead of dropping the connection
+  if ((m === 'POST' || m === 'PUT') && +req.headers['content-length'] > MAX_BODY) { req.resume(); return send(res, 413, { error: 'request too large' }); } // answer cleanly: drain the body so the client's write completes (EPIPE/RST on Linux was a test-visible difference), then 413
   let ctx = { role: 'admin', user: null };
   if (remote) { ctx = await remoteGate(req, res, u); if (!ctx) return; if (!accessAllowed(ctx, p, m)) return send(res, 403, { error: ctx.role === 'share' ? 'this LiveShare link is read-only' : 'your account is read-only' }); }
   else if (AGENT) {
@@ -1269,7 +1737,7 @@ const handle = async (req, res, remote = false) => {
         save(); return send(res, 200, { ok: true, customCols: t.customCols });
       }
       if (act === 'reresolve' && m === 'POST') { const b = await readBody(req); await checkIpChanges(t); for (const h of t.hops) { if (b.hop && +b.hop !== h.ttl) continue; if (!h.ip) continue; nameCache.delete(h.ip); h.name = await rdns(h.ip); } return send(res, 200, { ok: true }); }
-      if (act === 'reset' && m === 'POST') { const was = t.running; stop(t); t.epoch = (t.epoch || 0) + 1; t.hops = []; t.finalTtl = null; t.count = 0; t.routes = []; t.destState = null; dbDelete(t.id); if (was) start(t); return send(res, 200, { ok: true }); }
+      if (act === 'reset' && m === 'POST') { const was = t.running; stop(t); t.epoch = (t.epoch || 0) + 1; t.hops = []; t.finalTtl = null; t.count = 0; t.routes = []; t.destState = null; t.routeSeed = null; dbDelete(t.id); if (was) start(t); return send(res, 200, { ok: true }); }
       if (act === 'rename' && m === 'POST') { const b = await readBody(req), name = String(b.name || '').trim().slice(0, 100); if (b.hop) { const h = t.hops.find(x => x.ttl === +b.hop); if (h && h.ip) { if (name) settings.hostNames[h.ip] = name; else delete settings.hostNames[h.ip]; } } else if (name) t.name = name; save(); return send(res, 200, { ok: true }); }
       if (act === 'update' && m === 'POST') { const b = await readBody(req);
         if (b.configId !== undefined) t.configId = (b.configId && b.configId !== 'default' && (settings.configs || []).some(c => c.id === b.configId)) ? b.configId : null;
@@ -1278,7 +1746,7 @@ const handle = async (req, res, remote = false) => {
         if (b.name) t.name = String(b.name).slice(0, 100);
         if (b.persistence) t.adhoc = b.persistence === 'adhoc'; if (b.followIp != null) t.followIp = !!b.followIp && !require('net').isIP(t.host);
         save(); return send(res, 200, view(t, focus)); }
-      if (act === 'retrace') { t.finalTtl = null; t.hops = []; t.epoch = (t.epoch || 0) + 1; t.destState = null; if (t.agent) t.agent.since = 0; return send(res, 200, { ok: true }); }
+      if (act === 'retrace') { t.finalTtl = null; t.hops = []; t.epoch = (t.epoch || 0) + 1; t.destState = null; t.routeSeed = null; if (t.agent) t.agent.since = 0; return send(res, 200, { ok: true }); }
       if (act === 'hide' && m === 'POST') { const b = await readBody(req); t.hidden = b.hidden || []; return send(res, 200, { ok: true }); }
       if (act === 'samples') {
         const ttl = +u.searchParams.get('hop') || t.finalTtl || (t.hops.length ? t.hops[t.hops.length - 1].ttl : 1);
@@ -1405,7 +1873,7 @@ const handle = async (req, res, remote = false) => {
         clampCfg(c); // one range table for every numeric override (spec §12)
         save(); return send(res, 200, c); }
     }
-    if (p === '/api/packettypes') return send(res, 200, [{ id: 'icmp', name: 'ICMP Echo', port: false, available: true }, { id: 'tcp', name: 'TCP route trace (TTL-limited)', port: true, available: helperReady }, { id: 'udp', name: 'UDP route trace (TTL-limited)', port: true, available: helperReady }]);
+    if (p === '/api/packettypes') return send(res, 200, [{ id: 'icmp', name: 'ICMP Echo', port: false, available: true }, { id: 'tcp', name: 'TCP route trace (TTL-limited)', port: true, available: helperReady || LINUX }, { id: 'udp', name: 'UDP route trace (TTL-limited)', port: true, available: helperReady || LINUX }]);
     if (p === '/api/interfaces') return send(res, 200, Object.entries(os.networkInterfaces()).map(([name, a]) => ({ name, addresses: (a || []).map(x => ({ address: x.address, family: x.family, internal: x.internal, mac: x.mac })) })));
     // ---- summaries (named groups of targets / hops; "All Targets" is the Overview) ----
     if (p === '/api/summaries') {
@@ -1475,9 +1943,9 @@ const handle = async (req, res, remote = false) => {
       if (m === 'POST') { const b = await readBody(req); if (b.enabled) { settings.wifiMonitor = true; wifiStart(); } else { settings.wifiMonitor = false; wifiStop(); } save(); }
       else if (u.searchParams.get('scan') === '1') { if (!wifi.timer) await wifiPoll(); await wifiScan(); }
       const win = +u.searchParams.get('window') || 3600000;
-      return send(res, 200, { supported: WIN, enabled: !!wifi.timer, error: wifi.error, current: wifi.current, history: wifi.history.filter(h => h.t >= Date.now() - win), neighbors: wifi.neighbors });
+      return send(res, 200, { supported: WIN || LINUX, enabled: !!wifi.timer, error: wifi.error, current: wifi.current, history: wifi.history.filter(h => h.t >= Date.now() - win), neighbors: wifi.neighbors });
     }
-    if (p === '/api/info') return send(res, 200, { engine: helperReady ? 'helper' : 'ping.exe', platform: os.platform(), version: APP_VERSION, data: DATA_DIR, tray: !!tray, agent: AGENT });
+    if (p === '/api/info') return send(res, 200, { engine: helperReady ? 'native helper' : (WIN ? 'ping.exe' : (LINUX_ENGINE === 'icmp' ? 'built-in ICMP socket + TCP/UDP probes' : LINUX_ENGINE === 'traceroute' ? 'traceroute + built-in TCP/UDP probes' : LINUX_ENGINE === 'ping' ? 'tracepath + ping (traceroute not installed)' : 'detecting…')), platform: os.platform(), version: APP_VERSION, data: DATA_DIR, tray: !!tray, agent: AGENT });
     if (p === '/api/dashboard') return send(res, 200, targets.map(t => { const h = t.hops[t.hops.length - 1]; return { id: t.id, host: t.host, running: !!t.running, hops: t.hops.length, final: h ? stats(h, focus) : null }; }));
     // static (embedded in the exe, or ./public in dev)
     const name = p === '/' ? 'index.html' : p.replace(/^\/+/, '');
@@ -1498,13 +1966,20 @@ module.exports = {
   stats, statsRange, mos,
   trackRoute, protocolFinalTtl, classifyDestState,
   exportText, exportJson, exportMeta,
+  // Linux-port additions (exported for the unit tests; PT-L):
+  pingProbe, tcpProbeBuiltin, udpProbeBuiltin, icmpProbeBuiltin, icmpChecksum, protoProbe,
+  tracepathProbe, parseTracepath, tracerouteProbe, parseTraceroute, detectLinuxEngine,
+  linuxEngine: () => LINUX_ENGINE,
+  encryptSecret, decryptSecret, localSecretEncrypt, localSecretDecrypt,
+  smtpSend, renderUnit,
+  parseIwLink, parseNmcliScan, parseIpNeigh, dbmToPct, freqToChannel, bandOf, wifiLinuxDev,
 };
 
 if (require.main === module) {
   http.createServer((q, s) => handle(q, s, false)).listen(PORT, AGENT ? '0.0.0.0' : '127.0.0.1', () => {
     console.log(AGENT ? `PingTracer AGENT listening on 0.0.0.0:${PORT}\n  Agent token: ${AGENT_TOKEN}\n  (add this machine from a controller with URL http://<this-ip>:${PORT} and the token; traffic is plain HTTP, use a trusted network)`
                       : `PingTracer running at http://127.0.0.1:${PORT}`);
-    startHelper(); startTray(); try { loadExtensions(); } catch (e) { extensions.length = 0; console.error('extensions unavailable:', e.message); } openDb(); load(); migrateSecrets(); applyWeb(); if (settings.wifiMonitor && !AGENT) wifiStart(); // an unreadable extensions folder must not stop startup (spec §12)
+    detectLinuxEngine(); startHelper(); startTray(); try { loadExtensions(); } catch (e) { extensions.length = 0; console.error('extensions unavailable:', e.message); } openDb(); load(); migrateSecrets(); applyWeb(); if (settings.wifiMonitor && !AGENT) wifiStart(); // an unreadable extensions folder must not stop startup (spec §12)
     if (OPEN) openUi();
   }).on('error', e => { if (e.code === 'EADDRINUSE') { if (OPEN) { openUi(() => process.exit(0)); setTimeout(() => process.exit(0), 3000); } else { console.error('Port in use'); process.exit(1); } } });
   process.on('exit', () => { try { helper && helper.kill(); tray && tray.kill(); } catch {} });

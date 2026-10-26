@@ -1,0 +1,12 @@
+{
+  "main": "server.js",
+  "output": "dist/sea-prep.blob",
+  "disableExperimentalSEAWarning": true,
+  "useCodeCache": false,
+  "assets": {
+    "public/index.html": "public/index.html",
+    "public/docs.html": "public/docs.html",
+    "helper/pphelper.exe": "helper/pphelper.exe",
+    "helper/pptray.exe": "helper/pptray.exe"
+  }
+}
