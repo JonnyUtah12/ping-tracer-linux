@@ -4,6 +4,59 @@ All notable changes to PingTracer are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.2-linux] - 2026-10-26 (`ping-tracer-linux`, Linux port)
+
+The Linux port of PingTracer: same engine, API, GUI, history and feature set, running as
+a plain Node.js application on Ubuntu. No root, no daemon, no npm dependencies.
+
+### Added
+- **Probe engine ladder** for ICMP targets, chosen at startup and reported in the window
+  and in `GET /api/info`: unprivileged ICMP ping socket → `traceroute` →
+  `tracepath` (hop discovery) + `ping` (destination). No engine requires root.
+- Built-in Node.js TCP and UDP probes (no helper process, no elevation) for TCP/UDP
+  targets: path length plus destination state (`open` / `refused` / `filtered` /
+  `unreachable`).
+- `tests/linux-port.test.js`: engine ladder, built-in ICMP/TCP/UDP probes on loopback,
+  local secret store, `tracepath`/`traceroute` parsers, systemd unit rendering, Wi-Fi
+  (`iw`, `nmcli`) and `ip neigh` parsers.
+- `scripts/check-deps.sh` — dependency report that names the missing apt package for
+  every requirement, and never runs as root.
+- `scripts/install-linux.sh` — per-user install: app in `~/.local/share/pingtracer`,
+  `~/.local/bin/pingtracer` launcher (also `pingtracer cli …`), validated `.desktop`
+  menu entry, optional systemd **user** service for start-at-login; data in
+  `~/.local/share/PingTracer/data`.
+- `scripts/uninstall-linux.sh` — removes exactly what the installer created; keeps your
+  history unless you pass `--data`.
+- `scripts/build-deb.sh` — builds `pingtracer_<version>-1_all.deb` (control file,
+  desktop entry, `/usr/bin/pingtracer`, docs, copyright), prints
+  `dpkg-deb --info` / `--contents` and the SHA-256.
+- `.github/workflows/linux-ci.yml` — test suite on Node 22.5 / 22.x / 24.x, plus a
+  `.deb` build-and-inspect job with a `SHA256SUMS.txt` artifact.
+- Linux `README.md` (the Windows document is kept as `README-windows-original.md`).
+
+### Changed
+- Start-at-login: Windows per-user registry `Run` key → systemd user unit
+  `pingtracer-linux.service` (`systemctl --user`, no root).
+- Secrets: Windows DPAPI → AES-256-GCM with a `chmod 600` `secret.key` in the data
+  folder; a ciphertext from the other platform decrypts to empty and never throws.
+- TLS sharing: `New-SelfSignedCertificate`/PFX → `openssl req -x509` into `web.key`
+  (mode `0600`) + `web.cert`, TLS 1.2 minimum.
+- LAN discovery: `arp -a` → `ip -4 neigh show`; Wi-Fi: `netsh wlan` → `iw` / `nmcli`.
+- Every subprocess goes through one helper that uses `execFile` argument arrays, so no
+  shell string interpolation is involved; a missing binary is reported as
+  `"<cmd>: not installed"` and never as a network failure.
+- `tracepath` discovery is consumed line by line (and line-buffered with `stdbuf -oL`):
+  iputils block-buffers stdout on a pipe, so a capped run used to yield no hops at all
+  and the target showed nothing; hops now appear as each TTL answers.
+- Node 24+ compatibility: the built-in probes use `net.isIPv4` (`net.isIPv4String` does
+  not exist on current Node), and the engine ladder falls back to `traceroute` because
+  Node 24 removed the raw-socket datagram API the ICMP engine used.
+
+### Not present on Linux
+`PingTracer.exe`/SEA packaging, the system tray, the elevated `pphelper.exe`
+(TTL-limited TCP/UDP probes from user-mode sockets are impossible), registry, DPAPI,
+PowerShell and `netsh` dependencies, and Windows code signing.
+
 ## [1.1.2] - 2026-10-16
 
 Security-audit follow-up: CI/supply-chain hardening plus the published audit

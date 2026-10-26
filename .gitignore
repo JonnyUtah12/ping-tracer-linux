@@ -3,3 +3,7 @@ app/data/
 data/
 node_modules/
 *.log
+dist/
+.hermes-snap-*
+coverage/
+*.pid

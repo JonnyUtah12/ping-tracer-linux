@@ -1,0 +1,59 @@
+# Linux CI for the PingTracer Linux port: run the test suite on supported Node versions and
+# build + inspect the .deb. No npm dependencies exist in this repository, so there is no
+# install step to cache; every action is pinned to a full commit SHA (same convention as the
+# Windows release workflow).
+name: Linux CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: tests (Node ${{ matrix.node }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22.5 is the documented floor (node:sqlite). 24.x covers the Node >= 24 case,
+        # where the raw ICMP datagram socket is gone and the engine ladder must fall back.
+        node: ['22.5', '22.x', '24.x']
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Dependency check (report only; a missing optional tool must not fail the build)
+        run: bash scripts/check-deps.sh || true
+      - name: Test suite
+        run: node --test --test-concurrency=1 "tests/**/*.test.js"
+
+  deb:
+    name: build and inspect .deb
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.x
+      - name: Build
+        run: bash scripts/build-deb.sh dist
+      - name: Inspect (dependencies and installed files must be reviewable in the log)
+        run: |
+          set -e
+          deb="$(ls dist/*.deb | head -n1)"
+          dpkg-deb --info "$deb"
+          dpkg-deb --contents "$deb"
+          sha256sum "$deb" | tee dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pingtracer-deb
+          path: |
+            dist/*.deb
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
