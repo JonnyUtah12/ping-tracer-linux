@@ -1,0 +1,909 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PingTracer</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232563eb'/%3E%3Cpath d='M5 20h5l3-9 5 14 3-8 2 3h4' fill='none' stroke='white' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<style>
+/* ---- PingTracer UI: design tokens ---- */
+:root{
+  --bg:#f3f5f8;--panel:#ffffff;--panel2:#f8fafc;--fg:#0f172a;--mut:#64748b;--bd:#e2e8f0;--bd2:#cbd5e1;
+  --acc:#2563eb;--acc-fg:#ffffff;--acc-soft:rgba(37,99,235,.10);--acc-line:rgba(37,99,235,.35);
+  --ok:#15803d;--warn:#b45309;--bad:#dc2626;--bad-soft:rgba(220,38,38,.10);--warn-soft:rgba(217,119,6,.12);--ok-soft:rgba(22,163,74,.12);
+  --shadow:0 1px 2px rgba(15,23,42,.06),0 1px 3px rgba(15,23,42,.05);--shadow-lg:0 12px 32px rgba(15,23,42,.18),0 2px 6px rgba(15,23,42,.08);
+  --r:8px;--r-lg:12px;--ctl:32px;
+  --font:Inter,"Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,Roboto,sans-serif;--mono:"Cascadia Mono",Consolas,ui-monospace,Menlo,monospace;
+  color-scheme:light;
+}
+@media(prefers-color-scheme:dark){:root:not([data-theme=light]){
+  --bg:#0a0e14;--panel:#111827;--panel2:#0f1623;--fg:#e5ecf6;--mut:#8b9ab0;--bd:#1e293b;--bd2:#2c3a50;
+  --acc:#4f8cff;--acc-fg:#07111f;--acc-soft:rgba(79,140,255,.14);--acc-line:rgba(79,140,255,.45);
+  --ok:#34d399;--warn:#fbbf24;--bad:#f87171;--bad-soft:rgba(248,113,113,.14);--warn-soft:rgba(251,191,36,.14);--ok-soft:rgba(52,211,153,.14);
+  --shadow:0 1px 2px rgba(0,0,0,.4);--shadow-lg:0 16px 40px rgba(0,0,0,.55);color-scheme:dark}}
+:root[data-theme=dark]{
+  --bg:#0a0e14;--panel:#111827;--panel2:#0f1623;--fg:#e5ecf6;--mut:#8b9ab0;--bd:#1e293b;--bd2:#2c3a50;
+  --acc:#4f8cff;--acc-fg:#07111f;--acc-soft:rgba(79,140,255,.14);--acc-line:rgba(79,140,255,.45);
+  --ok:#34d399;--warn:#fbbf24;--bad:#f87171;--bad-soft:rgba(248,113,113,.14);--warn-soft:rgba(251,191,36,.14);--ok-soft:rgba(52,211,153,.14);
+  --shadow:0 1px 2px rgba(0,0,0,.4);--shadow-lg:0 16px 40px rgba(0,0,0,.55);color-scheme:dark}
+
+*{box-sizing:border-box}
+[hidden]{display:none!important} /* component display rules must never override the hidden attribute */
+html{-webkit-text-size-adjust:100%}
+body{margin:0;font:13px/1.45 var(--font);background:var(--bg);color:var(--fg);display:flex;flex-direction:column;height:100vh;font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}
+b,strong{font-weight:600}h3{font-size:16px;font-weight:650;letter-spacing:-.01em;margin:0 0 10px}h4{font-size:13px;font-weight:600;margin:14px 0 6px}
+code{font-family:var(--mono);font-size:12px;background:var(--panel2);border:1px solid var(--bd);border-radius:4px;padding:1px 5px}
+.mut{color:var(--mut)}.sp{flex:1}.bad{color:var(--bad);font-weight:600}.warn{color:var(--warn);font-weight:500}
+a{color:var(--acc)}
+::selection{background:var(--acc-soft)}
+:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
+::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:var(--bd2);border-radius:8px;border:2px solid transparent;background-clip:content-box}::-webkit-scrollbar-thumb:hover{background:var(--mut);background-clip:content-box;border:2px solid transparent}::-webkit-scrollbar-track{background:transparent}
+
+/* ---- controls ---- */
+input,select,button,textarea{font:inherit;color:inherit}
+input,select,textarea{height:var(--ctl);background:var(--panel);border:1px solid var(--bd2);border-radius:6px;padding:0 10px;transition:border-color .12s,box-shadow .12s}
+input[type=checkbox],input[type=radio]{height:auto;width:15px;height:15px;accent-color:var(--acc);padding:0;vertical-align:-3px}
+select{padding-right:6px}
+input::placeholder{color:var(--mut)}
+input:hover,select:hover{border-color:var(--mut)}
+input:focus,select:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-soft)}
+input:disabled,select:disabled,button:disabled{opacity:.55;cursor:not-allowed}
+button{height:var(--ctl);padding:0 12px;background:var(--panel);border:1px solid var(--bd2);border-radius:6px;cursor:pointer;font-weight:500;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;transition:background .12s,border-color .12s,box-shadow .12s}
+button:hover:not(:disabled){background:var(--panel2);border-color:var(--mut)}
+button:active:not(:disabled){transform:translateY(.5px)}
+button.pri{background:var(--acc);color:var(--acc-fg);border-color:var(--acc);font-weight:600}
+button.pri:hover:not(:disabled){background:var(--acc);filter:brightness(1.08);border-color:var(--acc)}
+button.ghost{background:transparent;border-color:transparent;color:var(--fg)}button.ghost:hover:not(:disabled){background:var(--acc-soft);border-color:transparent}
+button svg,.icon{width:16px;height:16px;flex:none;stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+label{display:inline-flex;align-items:center;gap:6px}
+
+/* ---- app bar + command bar ---- */
+.appbar{display:flex;align-items:center;gap:4px;padding:6px 14px;background:var(--panel);border-bottom:1px solid var(--bd);min-height:46px}
+.brand{display:flex;align-items:center;gap:9px;margin-right:14px;white-space:nowrap;flex:none;font-weight:700;font-size:15px;letter-spacing:-.02em;user-select:none}
+.brand svg{width:26px;height:26px;stroke:none}
+.brand small{font-weight:500;color:var(--mut);font-size:11px;letter-spacing:0;border:1px solid var(--bd);border-radius:10px;padding:0 7px;line-height:17px}
+.menu{position:relative}
+.menu>button{background:transparent;border-color:transparent;height:30px;padding:0 10px}
+.menu:hover>button,.menu:focus-within>button{background:var(--acc-soft)}
+.menu>div{display:none;position:absolute;z-index:20;top:100%;left:0;background:var(--panel);border:1px solid var(--bd2);border-radius:10px;min-width:250px;padding:5px;box-shadow:var(--shadow-lg);max-height:78vh;overflow:auto}
+.menu:focus-within>div,.menu:hover>div{display:block}
+.menu div button{display:flex;width:100%;text-align:left;border:none;background:none;height:30px;border-radius:6px;font-weight:400}
+.menu div button:hover{background:var(--acc-soft);border:none}
+.menu hr{border:0;border-top:1px solid var(--bd);margin:5px 4px}
+.cmdbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:9px 14px;background:var(--panel2);border-bottom:1px solid var(--bd)}
+.cmdbar .grp{display:flex;align-items:center;gap:8px}.cmdbar .grp+.grp{padding-left:10px;margin-left:2px;border-left:1px solid var(--bd)}
+.trace-form{display:flex;gap:6px;align-items:center}
+.field{position:relative;display:inline-flex;align-items:center}.field svg{position:absolute;left:9px;width:15px;height:15px;color:var(--mut);pointer-events:none}.field input{padding-left:30px;width:300px}
+.cmdbar label.mut{font-size:12px}
+.cmdbar select{min-width:0}
+
+/* ---- tabs ---- */
+#tabs{display:flex;gap:2px;padding:0 14px;background:var(--panel);overflow-x:auto;border-bottom:1px solid var(--bd);scrollbar-width:thin}
+.tab{padding:10px 14px 9px;border-bottom:2px solid transparent;cursor:pointer;white-space:nowrap;color:var(--mut);font-weight:500;display:flex;align-items:center;gap:7px;transition:color .12s,background .12s}
+.tab:hover{color:var(--fg);background:var(--acc-soft)}
+.tab.on{color:var(--fg);border-bottom-color:var(--acc);font-weight:600}
+.tab .x{margin-left:4px;color:var(--mut);width:18px;height:18px;line-height:18px;text-align:center;border-radius:4px;font-size:11px}
+.tab .x:hover{background:var(--bad-soft);color:var(--bad)}
+#newSum{color:var(--acc)}
+
+/* ---- layout + cards ---- */
+main{flex:1;overflow:auto;padding:14px;display:flex;flex-direction:column;gap:14px;scrollbar-width:none}
+main>*{flex:none} /* children keep natural height so main scrolls instead of squashing/clipping cards */
+main::-webkit-scrollbar{width:0;height:0}
+/* elevator scrollbar: mirrors main's native scroll at the window edge; the
+   native chrome above is hidden so there is exactly one scrollbar for main.
+   Other scroll regions (tables, dialogs, menus) keep the themed native one. */
+#elev{position:fixed;right:0;width:12px;z-index:40;display:none}
+#elev.on{display:block}
+#elev .trk{position:absolute;inset:0}
+#elev .thb{position:absolute;left:2px;right:2px;top:0;border-radius:8px;background:var(--bd2);cursor:grab;touch-action:none}
+#elev:hover .thb,#elev .thb.drag{background:var(--mut)}
+#elev .thb.drag{cursor:grabbing}
+.card{background:var(--panel);border:1px solid var(--bd);border-radius:var(--r-lg);overflow:hidden;box-shadow:var(--shadow)}
+.row{display:flex;gap:8px;align-items:center;padding:10px 14px;flex-wrap:wrap;border-bottom:1px solid var(--bd)}
+.card>.row:first-child{background:var(--panel2)}
+.row>b:first-child{font-size:14px;font-weight:650}
+dialog .row{padding:8px 0;border-bottom:1px solid var(--bd)}dialog .row:last-child{border-bottom:0}
+dialog .card>.row:first-child{background:transparent}
+#empty{padding:44px 24px;text-align:center;color:var(--mut)}
+#empty svg{width:56px;height:56px;color:var(--acc);opacity:.85;margin-bottom:10px}
+#empty h2{margin:0 0 6px;color:var(--fg);font-size:18px;letter-spacing:-.01em}
+#empty p{margin:0 auto;max-width:520px}
+
+/* ---- tables ---- */
+table{border-collapse:separate;border-spacing:0;width:100%}
+th,td{padding:7px 12px;text-align:right;border-bottom:1px solid var(--bd);white-space:nowrap}
+th{font-size:11px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.05em;position:sticky;top:0;background:var(--panel2);z-index:1}
+td.l,th.l{text-align:left}
+td{font-variant-numeric:tabular-nums}
+#tt td:nth-child(2){font-family:var(--mono);font-size:12px}
+tbody tr{cursor:pointer;transition:background .08s}
+tbody tr:last-child td{border-bottom:0}
+tbody tr:hover{background:var(--acc-soft)}
+tr.sel{background:var(--acc-soft);box-shadow:inset 3px 0 0 var(--acc)}tr.sel:hover{background:var(--acc-soft)}
+tr.hid{opacity:.4}
+td.cus{color:var(--mut);cursor:text}
+.bar{position:relative;height:10px;min-width:180px;background:var(--bd);border-radius:6px;overflow:hidden}
+.bar i{position:absolute;top:0;height:100%;border-radius:6px}
+#ovtable td .spark{display:block;margin-left:auto}
+.spark{width:120px;height:26px;vertical-align:middle}
+
+/* ---- graph + splitter ---- */
+#tg{width:100%;height:260px;display:block;background:var(--panel)}
+#split{height:10px;margin:-8px 0;cursor:ns-resize;border-radius:6px;background:linear-gradient(var(--bd2),var(--bd2)) center/44px 3px no-repeat;opacity:.7;transition:opacity .12s,background-color .12s}
+#split:hover{background-color:var(--acc-soft);opacity:1}
+
+/* ---- tiles ---- */
+#tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px;padding:14px}
+.tile{border:1px solid var(--bd);border-radius:var(--r-lg);padding:12px;cursor:pointer;background:var(--panel);transition:border-color .12s,box-shadow .12s}
+.tile:hover{border-color:var(--acc-line);box-shadow:var(--shadow)}
+.tile h4{margin:0 0 8px;display:flex;gap:8px;align-items:center;font-size:13px}
+.tile canvas{width:100%;height:78px;display:block}
+.tile .kv{display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;font-size:12px}.tile .kv span{color:var(--mut)}.tile .kv b{color:var(--fg)}
+
+/* ---- dialogs ---- */
+dialog{border:1px solid var(--bd2);border-radius:14px;background:var(--panel);color:var(--fg);max-width:740px;width:92vw;padding:20px 22px;box-shadow:var(--shadow-lg)}
+dialog::backdrop{background:rgba(8,12,20,.55)}
+dialog[open]{animation:pop .14s ease-out}
+@keyframes pop{from{opacity:0;transform:translateY(6px) scale(.985)}to{opacity:1;transform:none}}
+dialog h3{padding-bottom:10px;border-bottom:1px solid var(--bd);margin-bottom:12px}
+dialog .card{box-shadow:none}
+dialog label[style*="width"]{color:var(--fg)}
+.alert{padding:8px 14px;border-bottom:1px solid var(--bd)}.alert:last-child{border-bottom:0}
+details>summary{cursor:pointer;padding:4px 0}details[open]>summary{margin-bottom:4px}
+
+/* ---- settings dialog ---- */
+#dSet{max-height:90vh;overflow:auto;padding-bottom:0}
+.sect{margin:18px 0 2px;padding-bottom:5px;font-size:11px;font-weight:700;color:var(--mut);text-transform:uppercase;letter-spacing:.07em;border-bottom:1px solid var(--bd)}
+dialog .sect:first-of-type{margin-top:4px}
+.lw{width:250px;color:var(--fg)}
+dialog .row.mut{font-size:12px}
+dialog .row.foot{position:sticky;bottom:0;background:var(--panel);padding:14px 0;border-top:1px solid var(--bd);border-bottom:0;margin-top:10px}
+.x-Good{color:var(--ok);font-weight:600}.x-Fair{color:var(--warn);font-weight:600}.x-Poor{color:var(--bad);font-weight:600}
+/* ---- range chip, graph selection, sortable headers, read-only mode ---- */
+.chip{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 4px 0 10px;border-radius:14px;background:var(--acc-soft);color:var(--fg);font-size:12px;border:1px solid var(--acc-line)}
+.chip button{height:22px;width:22px;padding:0;justify-content:center;border-radius:11px;border:0;background:transparent}
+#graphCard{position:relative}#gSel{position:absolute;display:none;background:var(--acc-soft);border:1px solid var(--acc-line);pointer-events:none;border-radius:3px}
+#tg{cursor:crosshair}
+#ovtable th[data-k]{cursor:pointer;user-select:none}#ovtable th[data-k]:hover{color:var(--fg)}#ovtable th.sorted{color:var(--acc)}
+#whoBar{display:inline-flex;align-items:center;gap:8px;margin-right:6px;font-size:12px}.ghost-link{color:var(--acc);text-decoration:none;font-weight:500}.ghost-link:hover{text-decoration:underline}
+.ro .cmdbar,.ro #fileMenu,.ro #newSum,.ro .tab .x,.ro #smBar,.ro #alertsBtn,.ro #lanBtn,.ro #wifiBtn,.ro #setBtn,.ro #bAddCol,.ro #bResolve,.ro #bRename,.ro #bReset,.ro #bOpts,.ro label:has(#cfgSel){display:none!important}
+/* ---- toast ---- */
+#toast{position:fixed;right:16px;bottom:16px;background:#0f172a;color:#f8fafc;padding:10px 14px;border-radius:10px;border-left:4px solid var(--acc);display:none;z-index:99;max-width:380px;box-shadow:var(--shadow-lg);font-size:13px;animation:pop .16s ease-out}
+#toast.err{border-left-color:var(--bad)}
+
+@media(max-width:900px){.appbar button.ghost{font-size:0;gap:0;padding:0 9px}.appbar button.ghost #abadge{font-size:12px;margin-left:3px}.field input{width:200px}.brand small{display:none}.cmdbar .grp+.grp{border-left:0;padding-left:0}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style></head><body>
+<header class="appbar">
+  <div class="brand"><svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--acc)"/><path d="M5 20h5l3-9 5 14 3-8 2 3h4" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>PingTracer<small id="verTag"></small></div>
+  <div class="menu" id="fileMenu"><button>File</button><div>
+    <button data-a="txt-stats">Export text (statistics)…</button>
+    <button data-a="txt-long">Export all samples (long)…</button>
+    <button data-a="txt-wide">Export all samples (wide)…</button>
+    <button data-a="csv">Export all samples (CSV)…</button>
+    <button data-a="json">Export results (JSON)…</button>
+    <button data-a="range-exp">Export time range…</button>
+    <hr>
+    <button data-a="set-save">Save sample set…</button>
+    <button data-a="set-recent">Open recent sample set…</button>
+    <button data-a="set-out">Export sample set (.pp.json)…</button>
+    <button data-a="set-in">Load sample set…</button>
+    <hr>
+    <button data-a="list-out">Export target list…</button>
+    <button data-a="list-in">Import target list…</button>
+    <button data-a="sessions">Stored sessions…</button>
+    <button data-a="workspaces">Workspaces…</button>
+    <button data-a="liveshare">LiveShare links…</button>
+    <hr>
+    <button data-a="email">Send report by email</button>
+    <button data-a="clip-text">Copy as text (statistics only)</button>
+    <button data-a="img">Save as image (PNG)…</button>
+    <button data-a="img-clip">Copy as image</button>
+    <hr>
+    <button data-a="quit">Quit PingTracer</button>
+  </div></div>
+  <div class="menu"><button>View</button><div id="viewMenu">
+    <button data-v="theme">Toggle light / dark</button>
+    <button data-v="full">Full screen</button>
+    <button data-v="graph">Show / hide time graph</button>
+    <button data-v="order">Move graph above / below table</button>
+    <button data-v="tile">Overview: tiles / table</button>
+    <hr><div class="mut" style="padding:2px 10px;font-size:11px;text-transform:uppercase;letter-spacing:.05em">Columns</div>
+    <div id="colList" style="padding:2px 10px 6px"></div>
+  </div></div>
+  <div class="menu"><button>Help</button><div>
+    <button data-h="start">Getting started</button>
+    <button data-h="guides">Interpreting results</button>
+    <button data-h="keys">Keyboard shortcuts</button>
+    <button data-h="docs">REST API reference</button>
+  </div></div>
+  <span class="sp"></span>
+  <span id="whoBar"></span>
+  <button class="ghost" id="alertsBtn" title="Alerts" aria-label="Alerts"><svg viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>Alerts <span id="abadge" class="bad"></span></button>
+  <button class="ghost" id="lanBtn" title="LAN devices" aria-label="LAN devices"><svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>LAN</button>
+  <button class="ghost" id="wifiBtn" title="Wi-Fi" aria-label="Wi-Fi"><svg viewBox="0 0 24 24"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>Wi-Fi</button>
+  <button class="ghost" id="setBtn" title="Settings" aria-label="Settings"><svg viewBox="0 0 24 24"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>Settings</button>
+  <button class="ghost" id="aboutBtn" title="About" aria-label="About"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>About</button>
+</header>
+<div class="cmdbar">
+  <form id="addf" class="trace-form">
+    <span class="field"><svg viewBox="0 0 24 24" class="icon"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input id="host" list="recentHostList" placeholder="Hostname or IP address, e.g. 8.8.8.8" autofocus autocomplete="off" spellcheck="false"><datalist id="recentHostList"></datalist></span>
+    <select id="proto" title="Probe method. ICMP: echo probes per hop. TCP/UDP: TTL-limited route tracing (needs the native helper); hop addresses are attributed with ICMP"><option value="icmp">ICMP</option><option value="tcp">TCP</option><option value="udp">UDP</option></select>
+    <input id="port" type="number" min="1" max="65535" placeholder="port" style="width:78px" hidden>
+    <button class="pri">Trace</button>
+  </form>
+  <div class="grp">
+    <label class="mut">Interval <select id="interval"></select></label>
+    <label class="mut">Focus <select id="focus"></select></label><span id="rangeChip" class="chip" hidden><span></span><button title="Return to the live focus window" aria-label="Clear selected range">✕</button></span>
+  </div>
+  <div class="grp">
+    <button id="pause">Pause</button><button id="clear">Clear</button><button id="retrace">Re-trace route</button>
+    <button id="startAll" title="Start every closed or paused target">Start all</button><button id="stopAll" title="Stop every running target">Stop all</button>
+    <button id="remoteBtn" title="Trace a target from another machine running the exe with --agent">Remote…</button>
+    <label class="mut"><input type="checkbox" id="finalonly"> Final hop only</label>
+  </div>
+</div>
+<div id="tabs"></div>
+<main id="main">
+  <div class="card" id="empty"><svg viewBox="0 0 24 24" class="icon" style="width:56px;height:56px;stroke-width:1.4"><circle cx="5" cy="18" r="2"/><circle cx="12" cy="7" r="2"/><circle cx="19" cy="15" r="2"/><path d="M6.6 16.6l4-7.6M13.6 8.2l4 5.4"/></svg><h2>Trace your first target</h2><p>Enter a hostname or IP address above and press <b>Trace</b>. Every hop on the route is probed continuously; click a hop to graph it, and right-click to hide it.</p></div>
+  <div class="card" id="overview" hidden><div class="row"><b id="ovTitle">All Targets</b><span id="smBar"></span><span class="sp"></span><span class="mut">Final-hop stats over the focus window · click a row or tile to open</span></div>
+    <div id="tiles" hidden></div>
+    <table id="ovtable"><thead><tr><th class="l" data-k="host">Target</th><th data-k="status">Status</th><th data-k="avg">Avg</th><th data-k="cur">Cur</th><th data-k="loss">PL%</th><th data-k="jitter">Jitter</th><th data-k="mos">MOS</th><th>Last 10 min</th><th></th></tr></thead><tbody id="ovb"></tbody></table></div>
+  <div class="card" id="traceCard" hidden>
+    <div class="row"><b id="tname"></b><span class="mut" id="tsum"></span><span id="destState" hidden style="font-size:12px;font-weight:600"></span>
+      <label class="mut">Config <select id="cfgSel"></select></label><button id="bInsights">Insights</button><button id="bRoutes">Routes</button><button id="bComments">Comments</button><button id="bAddCol" title="Add a custom grid column; double-click a cell to fill it in">+ Column</button><button id="bResolve" title="Look hop names up again">Re-resolve</button><button id="bRename">Rename</button><button id="bReset" title="Clear data and re-trace, keeping the configuration">Reset</button><button id="bOpts" title="Keep or ad hoc, follow IP changes">Options…</button><span class="sp"></span><span class="mut">Click a row to graph · double-click Name to rename · right-click to hide/show hop</span></div>
+    <div style="overflow:auto"><table id="tt"><thead><tr><th>Hop</th><th class="l">IP</th><th class="l">Name</th><th>Avg</th><th>Min</th><th>Max</th><th>Cur</th><th>PL%</th><th title="Lost packets">Err</th><th>Jitter</th><th>MOS</th><th>Count</th><th class="l" id="exth">Latency</th></tr></thead><tbody></tbody></table></div>
+  </div>
+  <div id="split" title="Drag to resize the graph" hidden></div>
+  <div class="card" id="graphCard" hidden>
+    <div class="row"><b id="gtitle">Time graph</b><span class="sp"></span><button id="gBack" title="Show earlier" aria-label="Show earlier">◀</button><button id="gFwd" title="Show later" aria-label="Show later">▶</button><button id="gLive" class="pri" hidden>Back to live</button><label class="mut"><input type="checkbox" id="overlay"> Overlay all hops</label><label class="mut">Window <select id="win"></select></label></div>
+    <canvas id="tg" title="Drag to select a time range · double-click to add a comment"></canvas><div id="gSel"></div>
+  </div>
+</main>
+<div id="elev"><div class="trk"></div><div class="thb" tabindex="0" role="scrollbar" aria-orientation="vertical" aria-label="Scroll page" aria-controls="main" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div></div>
+<dialog id="dAlerts"><h3 style="margin-top:0">Alerts</h3>
+  <div id="rules"></div>
+  <div class="row"><button id="addRule">+ Add rule</button><button id="saveRules" class="pri">Save</button><label class="mut"><input type="checkbox" id="snd" checked> Play sound</label><label class="mut">Default <select id="sndSel"></select></label><button id="sndTest">▶</button><label class="mut"><input type="checkbox" id="notif"> Desktop notifications</label><span class="sp"></span><button onclick="dAlerts.close()">Close</button></div>
+  <h4>Recent alerts</h4><div id="alog" style="max-height:200px;overflow:auto" class="card"></div>
+</dialog>
+<dialog id="dAbout"><h3 style="margin-top:0">PingTracer</h3><p>Continuous traceroute &amp; ping monitor. Hops are discovered with TTL-limited ICMP echo requests. Probe engine: <b id="eng">?</b>. Data folder: <code id="ddir"></code></p><details><summary>Network interfaces</summary><div id="ifl" class="mut" style="max-height:160px;overflow:auto"></div></details><p></p><button onclick="dAbout.close()">Close</button></dialog>
+<dialog id="dGen" style="max-width:860px"><h3 id="gTitle" style="margin-top:0"></h3><div id="gBody"></div><div class="row"><span class="sp"></span><button onclick="dGen.close()">Close</button></div></dialog>
+<dialog id="dSet"><h3>Settings</h3>
+  <h4 class="sect">Tracing</h4>
+  <div class="row"><label class="lw">Trace interval (ms)</label><input id="s_int" type="number" min="250"></div>
+  <div class="row"><label class="lw">Probe timeout (ms)</label><input id="s_to" type="number" min="200" max="10000"></div>
+  <div class="row"><label class="lw">Packet size (bytes)</label><input id="s_ps" type="number" min="0" max="1400"></div>
+  <div class="row"><label class="lw">Max hops</label><input id="s_mh" type="number" min="1" max="64"></div>
+  <div class="row"><label class="lw">IP version for hostnames</label><select id="s_ipv"><option value="auto">Auto (IPv4 first)</option><option value="4">IPv4 only</option><option value="6">IPv6 only</option></select></div>
+  <div class="row"><label class="lw">Trace configurations</label><button id="s_cfgs">Manage configurations…</button></div>
+  <h4 class="sect">History</h4>
+  <div class="row"><label class="lw">Samples kept per hop (live view)</label><input id="s_ms" type="number" min="100"></div>
+  <div class="row"><label class="lw">Keep history for (days)</label><input id="s_hd" type="number" min="1" max="3650"></div>
+  <h4 class="sect">Application</h4>
+  <div class="row"><label class="lw">Open PingTracer in</label><select id="s_open"><option value="app">Its own app window</option><option value="browser">Default browser tab</option></select></div>
+  <div class="row"><label class="lw">Alert balloons from the tray icon</label><input id="s_tray" type="checkbox"></div>
+  <div class="row"><label class="lw">Start with Windows</label><input id="s_start" type="checkbox"><span class="mut">starts hidden in the tray</span></div>
+  <div id="webSec"><h4 class="sect">Web access (HTTPS)</h4>
+  <div class="row"><label class="lw"><input id="w_en" type="checkbox"> Allow other devices to open this GUI</label><label class="mut">Port <input id="w_port" type="number" style="width:90px" min="1024" max="65535"></label></div>
+  <div class="row mut" id="w_info"></div>
+  <div class="row"><button id="w_users">Manage web users…</button><button id="w_new">Generate new token</button><span class="mut">Self-signed certificate, so browsers warn once. The token gives full control except quitting, and creating program-launching or webhook alerts.</span></div></div>
+  <h4 class="sect">Email (SMTP)</h4>
+  <div class="row"><label class="lw">Server / port</label><input id="m_host" placeholder="smtp.example.com"><input id="m_port" type="number" style="width:90px" placeholder="587"><label><input id="m_ssl" type="checkbox"> SSL/TLS</label></div>
+  <div class="row"><label class="lw">User / password</label><input id="m_user"><input id="m_pass" type="password" placeholder="(unchanged)"></div>
+  <div class="row"><label class="lw">From / To</label><input id="m_from" placeholder="alerts@example.com"><input id="m_to" placeholder="you@example.com"></div>
+  <div class="row mut">The password is encrypted with Windows data protection and can only be read by your Windows account.</div>
+  <div class="row foot"><button id="m_test">Send test email</button><span class="sp"></span><button id="s_save" class="pri">Save</button><button onclick="dSet.close()">Cancel</button></div>
+</dialog>
+<dialog id="dWifi" style="max-width:860px"><h3 style="margin-top:0">Wi-Fi</h3>
+  <div class="row"><label><input type="checkbox" id="wf_en"> Monitor signal every 5 s</label><span class="sp"></span><label class="mut">History <select id="wf_win"><option value="600000">10 min</option><option value="3600000" selected>1 hour</option><option value="21600000">6 hours</option><option value="86400000">24 hours</option></select></label></div>
+  <div id="wf_cur" class="row" style="border:0"></div>
+  <canvas id="wf_g" style="width:100%;height:160px;display:block"></canvas>
+  <h4 style="margin:10px 0 4px">Nearby networks <button id="wf_scan">Scan</button></h4>
+  <div style="max-height:220px;overflow:auto" class="card"><table id="wf_tab"><thead><tr><th class="l">SSID</th><th class="l">BSSID</th><th>Signal</th><th>Band</th><th>Channel</th><th class="l">Radio</th><th class="l">Security</th></tr></thead><tbody></tbody></table></div>
+  <div class="row"><span class="mut" id="wf_note">Uses Windows' own WLAN service (netsh). English-language Windows only.</span><span class="sp"></span><button onclick="dWifi.close()">Close</button></div></dialog>
+<dialog id="dLan" style="max-width:980px"><h3 style="margin-top:0">LAN devices <span class="mut" id="lan_sub"></span></h3>
+  <div class="row"><button id="lan_scan" class="pri">Scan network</button><span id="lan_prog" class="mut"></span><span class="sp"></span><button id="lan_oui" title="Downloads the public IEEE MAC-vendor list (about 6 MB) from standards-oui.ieee.org">Update vendor database</button></div>
+  <div style="max-height:380px;overflow:auto" class="card"><table id="lan_tab"><thead><tr><th class="l">IP</th><th class="l">MAC</th><th class="l">Vendor</th><th class="l">Name</th><th>RTT</th><th class="l">Services (SSDP / mDNS)</th><th></th></tr></thead><tbody></tbody></table></div>
+  <div class="row"><span class="mut">Discovery uses a ping sweep of your subnet, the ARP table, reverse DNS, UPnP/SSDP and Bonjour/mDNS.</span><span class="sp"></span><button onclick="dLan.close()">Close</button></div></dialog>
+<dialog id="dRecent"><h3 style="margin-top:0">Saved sample sets</h3><div id="recentList" class="card" style="max-height:300px;overflow:auto"></div><div class="row"><span class="sp"></span><button onclick="dRecent.close()">Close</button></div></dialog>
+<dialog id="dHelp"><h3 style="margin-top:0" id="hTitle"></h3><div id="hBody" style="line-height:1.5"></div><div class="row"><span class="sp"></span><button onclick="dHelp.close()">Close</button></div></dialog>
+<input type="file" id="file" hidden>
+<div id="toast"></div>
+<script>
+const $=s=>document.querySelector(s);
+const SOUNDS={beep:'Beep',buzzer:'Buzzer',bell:'Dark church bell',goblet:'Goblet ping',sonar:'Sonar',tibetan:'Tibetan bell',none:'Silent'};
+
+const INT=[['1 second',1000],['2.5 seconds',2500],['5 seconds',5000],['10 seconds',10000],['15 seconds',15000],['30 seconds',30000],['60 seconds',60000],['90 seconds',90000],['2 minutes',120000],['3.5 minutes',210000],['5 minutes',300000],['10 minutes',600000],['15 minutes',900000],['30 minutes',1800000],['60 minutes',3600000]];
+const FOC=[['All',0],['Last 60 seconds',60000],['Last 5 minutes',300000],['Last 10 minutes',600000],['Last 30 minutes',1800000],['Last 60 minutes',3600000],['Last 3 hours',10800000],['Last 6 hours',21600000],['Last 12 hours',43200000],['Last 24 hours',86400000],['Last 48 hours',172800000],['Last 7 days',604800000],['Last 30 days',2592000000]];
+const WIN=[['60 seconds',60000],['5 minutes',300000],['10 minutes',600000],['30 minutes',1800000],['1 hour',3600000],['3 hours',10800000],['6 hours',21600000],['12 hours',43200000],['24 hours',86400000],['48 hours',172800000],['7 days',604800000],['30 days',2592000000]];
+const fill=(el,a,sel)=>{el.innerHTML=a.map(([l,v])=>`<option value="${v}">${l}</option>`).join('');if(sel!=null)el.value=sel};
+fill($('#interval'),INT,2500);fill($('#focus'),FOC,600000);fill($('#win'),WIN,600000);
+let targets=[],cur=null,selHop=null,settings={alertRules:[],hostNames:{}},paused=false,lastAlertT=0;
+const api=async(p,o)=>{const r=await fetch(p,o&&{method:o.m||'POST',headers:{'content-type':'application/json'},body:JSON.stringify(o.b||{})});const t=await r.text();let j;try{j=JSON.parse(t)}catch{j=t}if(!r.ok)throw new Error(j.error||t);return j};
+const toast=m=>{const t=$('#toast');t.textContent=m;t.className=/fail|error|cannot|invalid|denied|forbidden|not allowed|unavailable|wrong/i.test(m)?'err':'';t.style.display='block';clearTimeout(toast.h);toast.h=setTimeout(()=>t.style.display='none',4500)};
+const f1=v=>v==null?'–':v.toFixed(1);
+const col=ms=>ms==null?'var(--mut)':ms<80?'var(--ok)':ms<200?'var(--warn)':'var(--bad)';
+
+$('#addf').onsubmit=async e=>{e.preventDefault();const host=$('#host').value.trim();if(!host)return;
+  try{const proto=$('#proto').value,inSum=typeof cur==='string'?cur.slice(2):undefined;const t=await api('/api/targets',{b:{host,proto,port:proto==='icmp'?undefined:+$('#port').value||(proto==='tcp'?443:53),summaryId:inSum}});$('#host').value='';addRecent(host);if(!inSum){cur=t.id;selHop=null}await refresh()}catch(err){toast(err.message)}};
+$('#proto').onchange=()=>{const p=$('#proto').value;$('#port').hidden=p==='icmp';if(p!=='icmp'&&!$('#port').value)$('#port').value=p==='tcp'?443:53};
+$('#interval').onchange=()=>api('/api/settings',{b:{intervalMs:+$('#interval').value}});
+$('#focus').onchange=refresh;$('#win').onchange=drawGraph;
+$('#pause').onclick=async()=>{const t=curT();if(!t)return;await api(`/api/targets/${t.id}/${t.running?'stop':'start'}`,{b:{}});refresh()};
+$('#startAll').onclick=async()=>{for(const t of targets)if(!t.running){try{await api(`/api/targets/${t.id}/start`,{b:{}})}catch{}}refresh()};
+$('#stopAll').onclick=async()=>{for(const t of targets)if(t.running){try{await api(`/api/targets/${t.id}/stop`,{b:{}})}catch{}}refresh()};
+$('#clear').onclick=async()=>{const t=curT();if(t&&confirm('Clear collected samples for '+t.host+'?')){await api(`/api/targets/${t.id}/clear`,{b:{}});refresh()}};
+$('#retrace').onclick=async()=>{const t=curT();if(t){await api(`/api/targets/${t.id}/retrace`,{b:{}});refresh()}};
+$('#finalonly').onchange=async()=>{const t=curT();if(t)await api(`/api/targets/${t.id}/mode`,{b:{mode:$('#finalonly').checked?'final':'full'}})};
+const curT=()=>targets.find(t=>t.id===cur);
+
+async function refresh(){
+  try{targets=await api('/api/targets?'+focusQS());summaries=(await api('/api/summaries')).filter(s=>!s.builtin)}catch{return}
+  if(typeof cur==='string'&&!summaries.some(s=>'s:'+s.id===cur))cur=0;
+  if(cur===0&&targets.length<2&&!summaries.length)cur=targets[0]?.id??null;
+  if(typeof cur==='number'&&cur!==0&&!targets.find(t=>t.id===cur))cur=targets[0]?.id??null;
+  if(cur===null&&targets.length)cur=targets[0].id;
+  renderTabs();renderTable();drawGraph();pollAlerts();
+}
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function renderTable(){
+  const t=curT();const ov=(cur===0&&(targets.length>1||summaries.length>0))||typeof cur==='string';
+  $('#empty').hidden=!!t||ov;$('#overview').hidden=!ov;$('#traceCard').hidden=!t;$('#graphCard').hidden=!t||!!$('#graphCard').dataset.off;
+  if(!$('#colstyle').dataset.init){$('#colstyle').dataset.init=1;applyCols();if(LS.get('hideGraph'))$('#graphCard').dataset.off='1'}
+  $('#split').hidden=!t||!!$('#graphCard').dataset.off;
+  if(ov)renderOverview();
+  if(!t)return;
+  $('#pause').textContent=t.running?'Pause':'Resume';
+  $('#tname').textContent=`${t.host} (${t.ip})`+(t.proto&&t.proto!=='icmp'?` · ${t.proto.toUpperCase()}:${t.port}`:'')+(t.agent?` via agent ${t.agent.url}`:'');
+  $('#exth').insertAdjacentHTML('beforebegin',''); // keep header in sync with extension columns
+  const hr=$('#tt thead tr');[...hr.querySelectorAll('.extcol')].forEach(e=>e.remove());extCols.forEach(c=>$('#exth').insertAdjacentHTML('beforebegin',`<th class="extcol">${esc(c.title)}</th>`));
+  if(t.agent?.error)toast('Agent error: '+t.agent.error);
+  [...hr.querySelectorAll('.cuscol')].forEach(e=>e.remove());
+  const cusNames=Object.keys(t.customCols||{});
+  cusNames.forEach(n=>{$('#exth').insertAdjacentHTML('beforebegin',`<th class="cuscol" title="Right-click to remove this column">${esc(n)}</th>`);const th=$('#exth').previousElementSibling;
+    th.oncontextmenu=async e=>{e.preventDefault();if(confirm('Remove column "'+n+'"?')){await api(`/api/targets/${t.id}/column`,{b:{name:n,clear:true}});refresh()}}});
+  $('#bRoutes').textContent='Routes'+(t.routeChanges?` (${t.routeChanges})`:'');$('#bComments').textContent='Comments'+(t.comments?` (${t.comments})`:'');fillCfgSel(t);
+  const fin=t.hops[t.hops.length-1];
+  $('#tsum').textContent=`${t.hops.length} hops · ${t.count} rounds · ${t.finalTtl?'destination reached at hop '+t.finalTtl:'discovering route…'}`+(fin?` · final loss ${fin.stats.lossPct.toFixed(1)}%`:'');
+  { const ds=$('#destState'); // destination state from the protocol probe (TCP/UDP targets) — never call a filtered port "offline"
+    if(t.proto!=='icmp'&&t.destState){ds.hidden=false;ds.textContent='· destination: '+({open:'reached, port open',refused:'reached, port closed',filtered:'no response (filtered)',unreachable:'network unreachable',unknown:'unknown'}[t.destState]||t.destState);ds.style.color=t.destState==='open'||t.destState==='refused'?'var(--ok)':t.destState==='filtered'?'var(--warn)':'var(--bad)'}else ds.hidden=true;}
+  const maxMs=Math.max(50,...t.hops.map(h=>h.stats.max||0));
+  if(selHop==null||!t.hops.find(h=>h.ttl===selHop))selHop=t.finalTtl||t.hops[t.hops.length-1]?.ttl||null;
+  $('#tt tbody').innerHTML=t.hops.map(h=>{const s=h.stats,pct=v=>v==null?0:Math.min(100,v/maxMs*100);
+    return `<tr data-ttl="${h.ttl}" class="${h.ttl===selHop?'sel':''} ${h.hidden?'hid':''}"><td>${h.ttl}</td><td class="l">${esc(h.ip||'*')}</td><td class="l nm" title="double-click to rename">${esc(h.name||'')}</td>
+    <td>${f1(s.avg)}</td><td>${f1(s.min)}</td><td>${f1(s.max)}</td><td>${f1(s.cur)}</td><td class="${s.lossPct>=10?'bad':s.lossPct>0?'warn':''}">${s.lossPct.toFixed(1)}</td><td>${s.lost}</td><td>${f1(s.jitter)}</td><td>${s.mos?s.mos.toFixed(2):'–'}</td><td>${s.count}</td>
+    ${extCols.map(c=>`<td class="x-${esc(String(h.ext?.[c.id]??'')).replace(/\W/g,'')}">${esc(h.ext?.[c.id]??'')}</td>`).join('')}${cusNames.map(n=>`<td class="cus" data-col="${esc(n)}" title="Double-click to edit">${esc((t.customCols[n]||{})[h.ttl]||'')}</td>`).join('')}
+    <td class="l"><div class="bar">${s.min!=null?`<i style="left:${pct(s.min)}%;width:${Math.max(1,pct(s.max)-pct(s.min))}%;background:${col(s.avg)};opacity:.35"></i><i style="left:${pct(s.avg)}%;width:3px;background:${col(s.avg)}"></i>`:''}</div></td></tr>`}).join('');
+  $('#tt tbody').querySelectorAll('tr').forEach(tr=>{
+    tr.onclick=()=>{selHop=+tr.dataset.ttl;renderTable();drawGraph()};
+    tr.oncontextmenu=async e=>{e.preventDefault();const ttl=+tr.dataset.ttl;const h=new Set(t.hops.filter(x=>x.hidden).map(x=>x.ttl));h.has(ttl)?h.delete(ttl):h.add(ttl);
+      await api(`/api/targets/${t.id}/hide`,{b:{hidden:[...h]}});refresh()};
+    tr.querySelector('.nm').ondblclick=async e=>{const ip=t.hops.find(x=>x.ttl===+tr.dataset.ttl).ip;if(!ip)return;const n=prompt('Name for '+ip+' (blank resets):');
+      if(n==null)return;const s=await api('/api/settings');const hn={...s.hostNames};n?hn[ip]=n:delete hn[ip];await api('/api/settings',{b:{hostNames:hn}});refresh()};
+    tr.querySelectorAll('.cus').forEach(td=>td.ondblclick=async e=>{e.stopPropagation();const v=prompt(`${td.dataset.col} for hop ${tr.dataset.ttl}:`,td.textContent);if(v==null)return;await api(`/api/targets/${t.id}/column`,{b:{name:td.dataset.col,hop:+tr.dataset.ttl,value:v}});refresh()});
+  });
+}
+// Incremental sample cache: after the first full fetch only samples newer than the last one are requested, so a 6-hour graph no longer re-downloads its whole history every poll.
+const sampleCache=new Map();
+async function getSamples(tid,hop,w){
+  const key=tid+':'+hop,c=sampleCache.get(key);
+  if(c&&c.w===w&&c.arr.length){
+    const r=await api(`/api/targets/${tid}/samples?hop=${hop}&window=${w}&since=${c.arr[c.arr.length-1].t}`);
+    if(r.epoch===c.epoch){for(const s of r.samples)c.arr.push(s);const lim=Date.now()-w;let i=0;while(i<c.arr.length&&c.arr[i].t<lim)i++;if(i)c.arr.splice(0,i);return c.arr}
+  }
+  const r=await api(`/api/targets/${tid}/samples?hop=${hop}&window=${w}`);
+  sampleCache.set(key,{w,epoch:r.epoch,arr:r.samples});if(sampleCache.size>200)sampleCache.delete(sampleCache.keys().next().value);
+  return r.samples;
+}
+const PAL=['#4a9cf5','#e0a21f','#2e9e5b','#d9433b','#a06be0','#2bb8c4','#e06fa8','#8c9a3c','#c97b3a','#6f7f95'];
+async function drawGraph(){
+  const t=curT(),cv=$('#tg');if(!t||selHop==null)return;
+  const w=+$('#win').value,long=w>21600000,over=$('#overlay').checked&&!long,gt1=graphEnd||Date.now(),pastQ=`&from=${gt1-w}&to=${gt1}`;
+  let d,series=[],hist=null;
+  try{
+    if(long){hist=await api(`/api/targets/${t.id}/history?hop=${selHop}&from=${gt1-w}&to=${gt1}&buckets=${Math.max(100,Math.floor(cv.clientWidth/3))}`);d={samples:[]}}
+    else d={samples:graphEnd?(await api(`/api/targets/${t.id}/samples?hop=${selHop}${pastQ}`)).samples:await getSamples(t.id,selHop,w)};
+    if(over)series=await Promise.all(t.hops.filter(h=>!h.hidden).map(async h=>({ttl:h.ttl,samples:graphEnd?(await api(`/api/targets/${t.id}/samples?hop=${h.ttl}${pastQ}`)).samples:await getSamples(t.id,h.ttl,w)})));
+  }catch{return}
+  if(!over)series=[{ttl:selHop,samples:d.samples}];
+  let rts=[],cms=[]; // route-change and comment markers
+  try{if(t.routeChanges)rts=(await api(`/api/targets/${t.id}/routes`)).slice(0,-1).filter(r=>r.t>gt1-w&&r.t<=gt1);if(t.comments)cms=await api(`/api/targets/${t.id}/comments?start=${gt1-w}&end=${gt1+1}`)}catch{}
+  const h=t.hops.find(x=>x.ttl===selHop);$('#gtitle').textContent=`Hop ${selHop}${h?.ip?' – '+h.ip:''}${h?.name?' ('+h.name+')':''}`+(graphEnd?' · '+fmtR(gt1-w,gt1):'');
+  const dpr=devicePixelRatio||1,W=cv.clientWidth,H=cv.clientHeight;cv.width=W*dpr;cv.height=H*dpr;
+  const g=cv.getContext('2d');g.scale(dpr,dpr);const cs=getComputedStyle(document.documentElement);
+  const fg=cs.getPropertyValue('--mut'),bd=cs.getPropertyValue('--bd'),acc=cs.getPropertyValue('--acc'),bad=cs.getPropertyValue('--bad');
+  g.clearRect(0,0,W,H);const L=48,R=10,T=10,B=22,pw=W-L-R,ph=H-T-B,now=gt1,t0=now-w;
+  const ok=series.flatMap(s=>s.samples).filter(s=>s.ms!=null),maxY=Math.max(20,...(hist?hist.buckets.filter(b=>b.max!=null).map(b=>b.max):ok.map(s=>s.ms)))*1.15;
+  g.font='11px system-ui';g.fillStyle=fg;g.strokeStyle=bd;g.textAlign='right';
+  for(let i=0;i<=4;i++){const y=T+ph-ph*i/4;g.beginPath();g.moveTo(L,y);g.lineTo(W-R,y);g.stroke();g.fillText((maxY*i/4).toFixed(0)+' ms',L-4,y+3)}
+  g.textAlign='center';for(let i=0;i<=4;i++){const x=L+pw*i/4,tm=new Date(t0+w*i/4);g.fillText((w>=86400000?tm.toLocaleDateString([],{month:'short',day:'numeric'})+' ':'')+tm.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}),x,H-6)}
+  const X=ts=>L+(ts-t0)/w*pw,Y=ms=>T+ph-ms/maxY*ph;
+  gGeo={L,pw,t0,w};
+  const drawMarkers=()=>{g.save();g.setLineDash([4,3]);g.lineWidth=1.2;g.font='10px system-ui';
+    rts.forEach(r=>{const x=X(r.t);g.strokeStyle='#e0a21f';g.beginPath();g.moveTo(x,T);g.lineTo(x,T+ph);g.stroke();g.fillStyle='#e0a21f';g.textAlign='left';g.fillText('route change',x+3,T+ph-4)});
+    g.setLineDash([]);cms.forEach((c,i)=>{const x=X(c.t);g.strokeStyle='#a06be0';g.beginPath();g.moveTo(x,T+14);g.lineTo(x,T+ph);g.stroke();g.fillStyle='#a06be0';g.fillRect(x,T+2,Math.min(150,6+c.text.length*5.2),12);g.fillStyle='#fff';g.textAlign='left';g.fillText(c.text.slice(0,26),x+3,T+11)});g.restore()};
+  if(hist){ // long range from the history database: min-max band, average line, loss bars
+    const bw=Math.max(1,hist.step/w*pw);
+    g.globalAlpha=.22;g.fillStyle=acc;hist.buckets.forEach(b=>{if(b.max!=null){const x=X(b.t)-bw/2;g.fillRect(x,Y(b.max),bw,Math.max(1,Y(b.min)-Y(b.max)))}});g.globalAlpha=1;
+    g.fillStyle=bad;g.globalAlpha=.45;hist.buckets.forEach(b=>{if(b.lost>0){const f=b.lost/b.n;g.fillRect(X(b.t)-bw/2,T+ph*(1-Math.min(1,f)),bw,ph*Math.min(1,f))}});g.globalAlpha=1;
+    g.strokeStyle=acc;g.lineWidth=1.6;g.beginPath();let pn=false;hist.buckets.forEach(b=>{if(b.avg==null){pn=false;return}const x=X(b.t),y=Y(b.avg);pn?g.lineTo(x,y):g.moveTo(x,y);pn=true});g.stroke();
+    g.fillStyle=fg;g.textAlign='left';g.fillText(hist.buckets.length?'history database · bar height = packet loss':'no history yet for this range',L+6,T+12);
+    drawMarkers();return;
+  }
+  series.forEach((se,i)=>{const c=over?PAL[i%PAL.length]:acc;
+    g.fillStyle=bad;g.globalAlpha=over?.12:.35;se.samples.forEach(s=>{if(s.ms==null)g.fillRect(X(s.t)-1,T,2,ph)});g.globalAlpha=1;
+    g.strokeStyle=c;g.lineWidth=over&&se.ttl!==selHop?1:1.8;g.beginPath();let pen=false;
+    se.samples.forEach(s=>{if(s.ms==null){pen=false;return}const x=X(s.t),y=Y(s.ms);pen?g.lineTo(x,y):g.moveTo(x,y);pen=true});g.stroke();
+    if(!over){g.fillStyle=c;se.samples.forEach(s=>{if(s.ms!=null){g.beginPath();g.arc(X(s.t),Y(s.ms),1.8,0,7);g.fill()}})}
+    else{g.fillStyle=c;g.textAlign='left';g.fillText('hop '+se.ttl,L+6+i*52,T+12)}});
+  drawMarkers();
+}
+// ================= summaries, sessions, workspaces, configurations, routes, comments, guides =================
+let summaries=[],cfgs=[],gGeo=null,sumLoadId=null,wsHist=false;
+async function loadCfgs(){try{cfgs=await api('/api/configs')}catch{}}
+loadCfgs();
+function showGen(title,html){$('#gTitle').textContent=title;$('#gBody').innerHTML=html;if(!$('#dGen').open)$('#dGen').showModal()}
+const fmtT=t=>t?new Date(t).toLocaleString():'–';
+
+function renderTabs(){
+  const showAll=targets.length>1||summaries.length>0;
+  $('#tabs').innerHTML=(showAll?`<div class="tab ${cur===0?'on':''}" data-id="0">☰ All Targets</div>`:'')
+    +summaries.map(s=>`<div class="tab ${cur==='s:'+s.id?'on':''}" data-sid="${esc(s.id)}">▤ ${esc(s.name)}</div>`).join('')
+    +targets.map(t=>`<div class="tab ${t.id===cur?'on':''}" data-id="${t.id}">${t.running?'●':'❚❚'} ${esc(t.name&&t.name!==t.host?t.name:t.host)}${t.proto&&t.proto!=='icmp'?' <small class="mut">'+t.proto+':'+t.port+'</small>':''}${t.adhoc?' <small class="mut">ad hoc</small>':''}<span class="x" data-del="${t.id}">✕</span></div>`).join('')
+    +`<div class="tab" id="newSum" title="Create a summary: a named group of targets or hops">＋ Summary</div>`;
+  $('#tabs').querySelectorAll('.tab').forEach(el=>el.onclick=async e=>{
+    if(el.id==='newSum'){const n=prompt('Summary name:');if(!n)return;const members=typeof cur==='number'&&cur>0?[{tid:cur}]:[];const s=await api('/api/summaries',{b:{name:n,members}});cur='s:'+s.id;return refresh()}
+    if(e.target.dataset.del){if(confirm('Close this target? Its data is kept under File ▸ Stored sessions.')){await api('/api/targets/'+e.target.dataset.del,{m:'DELETE'});refresh()}return}
+    if(el.dataset.sid){cur='s:'+el.dataset.sid;selHop=null;return refresh()}
+    cur=+el.dataset.id;selHop=null;refresh()});
+}
+
+async function renderOverview(){
+  const sid=typeof cur==='string'?cur.slice(2):'all';let rows;
+  try{rows=sortRows(await api(`/api/summary-data?id=${encodeURIComponent(sid)}&${focusQS()}`))}catch{return}
+  const sm=summaries.find(s=>s.id===sid);
+  $('#ovTitle').textContent=sm?sm.name:'All Targets';
+  $('#smBar').innerHTML=sm?` <button id="smRen">Rename</button><button id="smAdd">Add targets…</button><button id="smLoad">Load list…</button><button id="smExp">Export list</button><label class="mut">New-target config <select id="smCfg">${cfgs.map(c=>`<option value="${esc(c.id)}" ${(sm.configId||'default')===c.id?'selected':''}>${esc(c.name)}</option>`).join('')}</select></label><button id="smShare">Share…</button><button id="smDel">Delete</button>`:'';
+  if(sm){
+    $('#smRen').onclick=async()=>{const n=prompt('New name:',sm.name);if(n){await api('/api/summaries/'+sid,{m:'PUT',b:{name:n}});refresh()}};
+    $('#smShare').onclick=showShares;
+    $('#smDel').onclick=async()=>{if(confirm('Delete this summary? Its targets keep tracing.')){await api('/api/summaries/'+sid,{m:'DELETE'});cur=0;refresh()}};
+    $('#smCfg').onchange=()=>api('/api/summaries/'+sid+'/config',{b:{configId:$('#smCfg').value}});
+    $('#smExp').onclick=async()=>dl(sm.name+'.txt',await api('/api/summaries/'+sid+'/list'));
+    $('#smLoad').onclick=()=>{importKind='sum-load';sumLoadId=sid;$('#file').click()};
+    $('#smAdd').onclick=()=>{const avail=targets.filter(t=>!sm.members.some(m=>m.tid===t.id&&!m.ttl));
+      showGen('Add to '+sm.name,avail.length?`<div class="card">${avail.map(t=>`<label class="alert row" style="display:flex"><input type="checkbox" data-t="${t.id}"> ${esc(t.host)}<span class="sp"></span><span class="mut">hop</span><input data-h="${t.id}" placeholder="final" style="width:60px"></label>`).join('')}</div><div class="row"><button class="pri" id="gAddOk">Add selected</button></div>`:'<p class="mut">Every open target is already a member.</p>');
+      const ok=$('#gAddOk');if(ok)ok.onclick=async()=>{const members=[...$('#gBody').querySelectorAll('input[data-t]:checked')].map(cb=>({tid:+cb.dataset.t,ttl:+($('#gBody').querySelector(`input[data-h="${cb.dataset.t}"]`).value)||null}));
+        await api('/api/summaries/'+sid+'/add',{b:{members}});$('#dGen').close();refresh()}};
+  }
+  const tile=LS_get('tileOverview',false);$('#tiles').hidden=!tile;$('#ovtable').hidden=tile;
+  const key=r=>r.tid+':'+(r.ttl||'f');
+  const label=r=>esc(r.host)+(r.ttl&&r.hops&&r.ttl!==r.hops?` <span class="mut">hop ${r.ttl}${r.hopName||r.hopIp?' · '+esc(r.hopName||r.hopIp):''}</span>`:'');
+  if(tile){
+    $('#tiles').innerHTML=rows.map(r=>{const s=r.stats;return `<div class="tile" data-tid="${r.tid}" data-ttl="${r.ttl||''}"><h4>${r.running?'<span style="color:var(--ok)">●</span>':'<span class="mut">❚❚</span>'} ${label(r)}</h4>
+      <canvas data-tid="${r.tid}" data-ttl="${r.ttl||''}" width="640" height="140"></canvas>
+      <div class="kv"><span>avg <b>${f1(s?.avg)}</b> ms</span><span>cur <b>${f1(s?.cur)}</b></span><span>loss <b class="${s&&s.lossPct>=10?'bad':''}">${s?s.lossPct.toFixed(1):'–'}%</b></span><span>jitter <b>${f1(s?.jitter)}</b></span><span>MOS <b>${s?.mos?s.mos.toFixed(2):'–'}</b></span></div></div>`}).join('')||'<p class="mut" style="padding:12px">No members yet.</p>';
+    $('#tiles').querySelectorAll('.tile').forEach(el=>el.onclick=()=>{cur=+el.dataset.tid;selHop=+el.dataset.ttl||null;refresh()});
+  }else{
+    $('#ovb').innerHTML=rows.map(r=>{const s=r.stats;return `<tr data-tid="${r.tid}" data-ttl="${r.ttl||''}"><td class="l">${label(r)}</td><td>${r.running?'<span style="color:var(--ok)">● running</span>':'<span class="mut">paused</span>'}</td>
+      <td>${f1(s?.avg)}</td><td>${f1(s?.cur)}</td><td class="${s&&s.lossPct>=10?'bad':s&&s.lossPct>0?'warn':''}">${s?s.lossPct.toFixed(1):'–'}</td><td>${f1(s?.jitter)}</td><td>${s?.mos?s.mos.toFixed(2):'–'}</td><td><canvas class="spark" data-tid="${r.tid}" data-ttl="${r.ttl||''}" width="240" height="52"></canvas></td><td>${sm?`<button data-rm="${key(r)}" title="Remove from summary">✕</button>`:''}</td></tr>`}).join('')||`<tr><td class="l mut" colspan="9">${sm?'No members yet. Use Add targets….':'No targets yet.'}</td></tr>`;
+    $('#ovb').querySelectorAll('tr[data-tid]').forEach(tr=>tr.onclick=e=>{if(e.target.dataset.rm)return;cur=+tr.dataset.tid;selHop=+tr.dataset.ttl||null;refresh()});
+    $('#ovb').querySelectorAll('button[data-rm]').forEach(b=>b.onclick=async()=>{const [tid,tt]=b.dataset.rm.split(':');await api('/api/summaries/'+sid+'/remove',{b:{members:[{tid:+tid,ttl:tt==='f'?null:+tt}]}});refresh()});
+  }
+  const css=getComputedStyle(document.documentElement);
+  (tile?$('#tiles'):$('#ovb')).querySelectorAll('canvas').forEach(async cv=>{try{
+    const d=await api(`/api/targets/${cv.dataset.tid}/samples?window=600000${cv.dataset.ttl?'&hop='+cv.dataset.ttl:''}`),g=cv.getContext('2d'),W=cv.width,H=cv.height,now=Date.now(),big=tile;g.clearRect(0,0,W,H);
+    const ok=d.samples.filter(s=>s.ms!=null),mx=Math.max(20,...ok.map(s=>s.ms))*(big?1.1:1);
+    if(big){g.strokeStyle=css.getPropertyValue('--bd');g.lineWidth=1;[.25,.5,.75].forEach(f=>{g.beginPath();g.moveTo(0,H*f);g.lineTo(W,H*f);g.stroke()})}
+    g.strokeStyle=css.getPropertyValue('--acc');g.lineWidth=big?2.5:2;g.beginPath();let pen=false;
+    d.samples.forEach(s=>{const x=(s.t-(now-600000))/600000*W;if(s.ms==null){g.save();g.fillStyle='rgba(217,67,59,.55)';g.fillRect(x-1.5,0,3,H);g.restore();pen=false;return}const y=H-3-s.ms/mx*(H-6);pen?g.lineTo(x,y):g.moveTo(x,y);pen=true});g.stroke()}catch{}});
+}
+
+// ---- stored sessions ----
+async function showSessions(){
+  const l=await api('/api/sessions');
+  showGen('Stored sessions',l.length?`<div class="card" style="max-height:380px;overflow:auto"><table><thead><tr><th class="l">Target</th><th class="l">Closed</th><th>Samples</th><th class="l">Data range</th><th></th></tr></thead><tbody>${l.map(x=>`<tr><td class="l">${esc(x.host)} <span class="mut">${x.proto!=='icmp'?x.proto+':'+x.port:''}</span></td><td class="l">${fmtT(x.closedAt)}</td><td>${x.samples}</td><td class="l">${x.first?fmtT(x.first)+' → '+fmtT(x.last):'–'}</td><td><button data-o="${x.sid}">Open (paused)</button> <button data-d="${x.sid}">Delete</button></td></tr>`).join('')}</tbody></table></div>`:'<p class="mut">No stored sessions. Closing a target keeps it here.</p>');
+  $('#gBody').querySelectorAll('button').forEach(b=>b.onclick=async()=>{try{
+    if(b.dataset.o){const t=await api('/api/sessions/'+b.dataset.o+'/open',{b:{}});$('#dGen').close();cur=t.id;selHop=null;refresh()}
+    else if(confirm('Permanently delete this session and its data?')){await api('/api/sessions/'+b.dataset.d,{m:'DELETE'});showSessions()}}catch(e){toast(e.message)}});
+}
+
+// ---- workspaces ----
+async function showWorkspaces(){
+  const w=await api('/api/workspaces');
+  showGen('Workspaces',`<div class="card">${w.list.map(n=>`<div class="alert row" style="display:flex"><b>${esc(n)}</b>${n===w.active?'<span class="mut">(current)</span>':''}<span class="sp"></span>${n===w.active?'':`<button data-o="${esc(n)}">Open</button>`}<button data-r="${esc(n)}">Rename</button>${n===w.active?'':`<button data-d="${esc(n)}">Delete</button>`}</div>`).join('')}</div>
+   <div class="row"><button id="wNew">New workspace…</button><button id="wClear" title="Close every target and delete summaries in the current workspace">Clear current</button><button id="wExp">Export current…</button><button id="wImp">Import…</button></div>
+   <p class="mut">A workspace is a saved set of open targets and summaries. Switching saves the current one first; target data stays in the history database.</p>`);
+  const act=async(b)=>{try{await api('/api/workspaces',{b});showWorkspaces();refresh()}catch(e){toast(e.message)}};
+  $('#gBody').querySelectorAll('button[data-o]').forEach(b=>b.onclick=()=>act({action:'open',name:b.dataset.o}));
+  $('#gBody').querySelectorAll('button[data-d]').forEach(b=>b.onclick=()=>{if(confirm('Delete workspace '+b.dataset.d+'?'))act({action:'delete',name:b.dataset.d})});
+  $('#gBody').querySelectorAll('button[data-r]').forEach(b=>b.onclick=()=>{const n=prompt('New name:',b.dataset.r);if(n)act({action:'rename',name:b.dataset.r,to:n})});
+  $('#wNew').onclick=()=>{const n=prompt('Workspace name:');if(n)act({action:'new',name:n})};
+  $('#wClear').onclick=()=>{if(confirm('Close all targets and delete all summaries in this workspace? Closed targets are kept as stored sessions.'))act({action:'clear'})};
+  $('#wExp').onclick=async()=>{const d=await api('/api/workspaces',{b:{action:'export'}});dl((d.name||'workspace')+'.ppworkspace.json',JSON.stringify(d),'application/json')};
+  $('#wImp').onclick=()=>{wsHist=confirm('Also import the sample history stored in the file?\n(OK = with history, Cancel = layout and targets only)');importKind='ws-import';$('#file').click()};
+}
+
+// ---- configurations ----
+async function showCfgs(){
+  await loadCfgs();
+  showGen('Configurations',`<p class="mut">A configuration is a named set of trace settings. Assign one per target with the Config box above the trace table, or per summary for new targets.</p>
+  <div style="overflow:auto"><table><thead><tr><th class="l">Name</th><th>Interval ms</th><th>Timeout ms</th><th>Packet bytes</th><th>Max hops</th><th>Keep days</th><th></th></tr></thead><tbody>${cfgs.map((c,i)=>`<tr data-id="${esc(c.id)}"><td class="l"><input class="cn" value="${esc(c.name)}" ${c.builtin?'disabled':''} style="width:140px"></td>
+   ${['intervalMs','timeoutMs','packetSize','maxHops','keepDays'].map(k=>`<td><input class="ck" data-k="${k}" type="number" value="${c[k]??''}" style="width:90px"></td>`).join('')}
+   <td style="white-space:nowrap"><button data-a="save">Save</button><button data-a="copy">Copy</button>${c.builtin?'':'<button data-a="up">↑</button><button data-a="down">↓</button><button data-a="del">Delete</button>'}</td></tr>`).join('')}</tbody></table></div>
+  <div class="row"><button id="cNew">New configuration</button></div>`);
+  $('#gBody').querySelectorAll('tr[data-id]').forEach(tr=>tr.querySelectorAll('button').forEach(b=>b.onclick=async()=>{const id=tr.dataset.id,a=b.dataset.a;try{
+    const vals={};tr.querySelectorAll('.ck').forEach(i=>vals[i.dataset.k]=i.value===''?undefined:+i.value);
+    if(a==='save'){ if(id==='default'){await api('/api/settings',{b:{intervalMs:vals.intervalMs,timeoutMs:vals.timeoutMs,packetSize:vals.packetSize,maxHops:vals.maxHops,historyDays:vals.keepDays}})}else await api('/api/configs/'+id,{m:'PUT',b:{name:tr.querySelector('.cn').value,...vals}});toast('Saved')}
+    else if(a==='copy')await api('/api/configs',{b:{copyOf:id}});
+    else if(a==='del'){if(!confirm('Delete this configuration? Targets using it fall back to the default.'))return;await api('/api/configs/'+id,{m:'DELETE'})}
+    else if(a==='up'||a==='down')await api('/api/configs/'+id+'/move',{b:{dir:a}});
+    showCfgs();refresh()}catch(e){toast(e.message)}}));
+  $('#cNew').onclick=async()=>{await api('/api/configs',{b:{name:'New configuration'}});showCfgs()};
+}
+
+// ---- route changes ----
+async function showRoutes(){
+  const t=curT();if(!t)return;const r=await api(`/api/targets/${t.id}/routes`);
+  if(!r.length)return showGen('Route changes','<p class="mut">No route recorded yet.</p>');
+  showGen(`Route changes – ${esc(t.host)}`,`<p class="mut">${r.length-1} change${r.length===2?'':'s'} recorded. Hops that differ from the previous route are highlighted.</p><div style="max-height:420px;overflow:auto">${r.map((x,i)=>{const older=r[i+1];
+    return `<div class="card" style="margin-bottom:8px"><div class="row"><b>${i===r.length-1?'Initial route':'Route changed'}</b><span class="mut">${fmtT(x.t)}</span></div><div style="padding:6px 12px;font-family:Consolas,monospace;font-size:12px">${x.hops.map(h=>{const o=older&&older.hops.find(q=>q.ttl===h.ttl);const diff=older&&(!o||o.ip!==h.ip);return `<div class="${diff?'warn':''}">${String(h.ttl).padStart(2)}  ${esc(h.ip||'*')}${diff&&o?` <span class="mut">(was ${esc(o.ip||'*')})</span>`:''}</div>`}).join('')}</div></div>`}).join('')}</div>`);
+}
+
+// ---- comments ----
+async function showComments(){
+  const t=curT();if(!t)return;const l=(await api(`/api/targets/${t.id}/comments`)).sort((a,b)=>b.t-a.t);
+  showGen(`Timeline comments – ${esc(t.host)}`,`<div style="max-height:300px;overflow:auto" class="card">${l.map(c=>`<div class="alert row" style="display:flex"><span class="mut" style="white-space:nowrap">${fmtT(c.t)}${c.hop?' · hop '+c.hop:''}</span><span style="flex:1;white-space:pre-wrap">${esc(c.text)}</span><button data-e="${c.id}">Edit</button><button data-d="${c.id}">Delete</button></div>`).join('')||'<div class="alert mut">No comments yet.</div>'}</div>
+   <div class="row"><input id="cmText" placeholder="Add a comment at the current time" style="flex:1;min-width:240px"><input id="cmHop" placeholder="hop" style="width:60px"><button id="cmAdd" class="pri">Add</button></div><p class="mut">Tip: double-click the time graph to add a comment at that moment.</p>`);
+  $('#cmAdd').onclick=async()=>{const text=$('#cmText').value.trim();if(!text)return;await api(`/api/targets/${t.id}/comments`,{b:{text,hop:+$('#cmHop').value||null}});await refresh();showComments()};
+  $('#gBody').querySelectorAll('button[data-e]').forEach(b=>b.onclick=async()=>{const c=l.find(x=>x.id===b.dataset.e),n=prompt('Edit comment:',c.text);if(n==null)return;await api(`/api/targets/${t.id}/comments`,{m:'PUT',b:{id:c.id,text:n}});showComments()});
+  $('#gBody').querySelectorAll('button[data-d]').forEach(b=>b.onclick=async()=>{await api(`/api/targets/${t.id}/comments`,{m:'DELETE',b:{id:b.dataset.d}});await refresh();showComments()});
+}
+$('#tg').ondblclick=async e=>{const t=curT();if(!t||!gGeo||selHop==null)return;const r=$('#tg').getBoundingClientRect(),x=e.clientX-r.left;if(x<gGeo.L)return;
+  const ts=Math.round(gGeo.t0+(x-gGeo.L)/gGeo.pw*gGeo.w),text=prompt('Comment at '+new Date(ts).toLocaleString()+' (hop '+selHop+'):');if(!text)return;
+  await api(`/api/targets/${t.id}/comments`,{b:{text,t:ts,hop:selHop}});refresh()};
+
+// ---- guidance ----
+function md(s){return esc(s).replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').split(/\n\n+/).map(p=>'<p>'+p.replace(/\n/g,'<br>')+'</p>').join('')}
+async function showGuides(){
+  const g=await api('/api/guidance');
+  showGen('Interpreting results',`<div style="max-height:440px;overflow:auto">${g.map(x=>`<details style="margin-bottom:6px"><summary><b>${esc(x.title)}</b>${x.custom?' <span class="mut">(custom)</span>':''}</summary>${md(x.body)}</details>`).join('')}</div>
+   <div class="row"><button id="gdExp" title="Writes the built-in guides as topic.default.md files; rename one to topic.md and edit it to override that guide">Export default guides…</button></div>`);
+  $('#gdExp').onclick=async()=>{const r=await api('/api/guidance/export',{b:{}});toast('Guides written to '+r.dir+'. Rename a topic.default.md to topic.md to customize it.')};
+}
+
+// ---- toolbar buttons for the selected target ----
+$('#bRoutes').onclick=showRoutes;$('#bComments').onclick=showComments;$('#s_cfgs').onclick=()=>{$('#dSet').close();showCfgs()};
+$('#bAddCol').onclick=async()=>{const t=curT();if(!t)return;const n=prompt('Name for the new column (double-click a cell to fill it in):');if(!n)return;await api(`/api/targets/${t.id}/column`,{b:{name:n}});refresh()};
+$('#bResolve').onclick=async()=>{const t=curT();if(!t)return;await api(`/api/targets/${t.id}/reresolve`,{b:{}});toast('Hop names looked up again');refresh()};
+$('#bRename').onclick=async()=>{const t=curT();if(!t)return;const n=prompt('Target name:',t.name||t.host);if(n){await api(`/api/targets/${t.id}/rename`,{b:{name:n}});refresh()}};
+$('#bReset').onclick=async()=>{const t=curT();if(t&&confirm('Reset '+t.host+'? Collected data is cleared and the route is traced again; configuration is kept.')){await api(`/api/targets/${t.id}/reset`,{b:{}});refresh()}};
+$('#cfgSel').onchange=async()=>{const t=curT();if(t){await api(`/api/targets/${t.id}/update`,{b:{configId:$('#cfgSel').value}});refresh()}};
+function fillCfgSel(t){const s=$('#cfgSel');if(document.activeElement===s)return;s.innerHTML=cfgs.map(c=>`<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('');s.value=t.configId||'default'}
+
+// ================= time navigation, Insights, range export, target options, web users, LiveShare, read-only mode =================
+let fixedRange=null,graphEnd=null,me={role:'admin',local:true};
+function focusQS(){return fixedRange?`from=${fixedRange.from}&to=${fixedRange.to}`:'focus='+(+$('#focus').value||0)}
+const fmtR=(a,b)=>{const d1=new Date(a),d2=new Date(b),o={hour:'2-digit',minute:'2-digit'},dd={month:'short',day:'numeric'};return d1.toLocaleDateString([],dd)+' '+d1.toLocaleTimeString([],o)+' – '+(d1.toDateString()===d2.toDateString()?'':d2.toLocaleDateString([],dd)+' ')+d2.toLocaleTimeString([],o)};
+function setRange(from,to){
+  if(!(to>from))return;fixedRange={from:Math.round(from),to:Math.round(to)};
+  let o=$('#focus').querySelector('option[value=range]');if(!o){o=document.createElement('option');o.value='range';$('#focus').append(o)}
+  o.textContent='Selected range';$('#focus').value='range';$('#rangeChip').hidden=false;$('#rangeChip span').textContent=fmtR(from,to);refresh()}
+function clearRange(){fixedRange=null;const o=$('#focus').querySelector('option[value=range]');if(o)o.remove();$('#focus').value=String(LS_get('focusVal',600000));if(!$('#focus').value)$('#focus').value='600000';$('#rangeChip').hidden=true;refresh()}
+$('#focus').addEventListener('change',()=>{if($('#focus').value==='range')return;fixedRange=null;const o=$('#focus').querySelector('option[value=range]');if(o)o.remove();$('#rangeChip').hidden=true;LS_set('focusVal',+$('#focus').value);refresh()});
+$('#rangeChip button').onclick=clearRange;
+// graph panning ("live" vs a past window) and drag-to-select a time range
+function panGraph(dir){const w=+$('#win').value,now=Date.now();if(!dir)graphEnd=null;else{graphEnd=Math.min(now,(graphEnd||now)+dir*w/2);if(graphEnd>=now-1000)graphEnd=null}$('#gLive').hidden=!graphEnd;drawGraph()}
+$('#gBack').onclick=()=>panGraph(-1);$('#gFwd').onclick=()=>panGraph(1);$('#gLive').onclick=()=>panGraph(0);
+let gDrag=null;
+$('#tg').addEventListener('mousedown',e=>{if(e.button!==0||!gGeo)return;const r=$('#tg').getBoundingClientRect(),x=e.clientX-r.left;if(x<gGeo.L)return;gDrag={x0:x,r}});
+addEventListener('mousemove',e=>{if(!gDrag)return;const x=Math.max(gGeo.L,Math.min(gDrag.r.width-10,e.clientX-gDrag.r.left)),a=Math.min(gDrag.x0,x),b=Math.max(gDrag.x0,x);gDrag.x1=x;
+  if(b-a<6)return;const s=$('#gSel'),cr=$('#tg').getBoundingClientRect(),pr=$('#graphCard').getBoundingClientRect();
+  Object.assign(s.style,{display:'block',left:(cr.left-pr.left+a)+'px',width:(b-a)+'px',top:(cr.top-pr.top)+'px',height:cr.height+'px'})});
+addEventListener('mouseup',()=>{if(!gDrag)return;const d=gDrag;gDrag=null;$('#gSel').style.display='none';if(d.x1==null||Math.abs(d.x1-d.x0)<6)return;
+  const tt=x=>gGeo.t0+(x-gGeo.L)/gGeo.pw*gGeo.w;setRange(tt(Math.min(d.x0,d.x1)),tt(Math.max(d.x0,d.x1)))});
+function focusOn(a,b){$('#dGen').close();const pad=Math.max(60000,(b-a)*0.5),opts=[...$('#win').options].map(o=>+o.value);
+  $('#win').value=String(opts.find(v=>v>=(b-a)+2*pad)||opts[opts.length-1]);graphEnd=Math.min(Date.now(),b+pad);if(graphEnd>=Date.now()-1000)graphEnd=null;$('#gLive').hidden=!graphEnd;
+  const t=curT();if(t&&t.finalTtl)selHop=t.finalTtl;setRange(a,b)}
+
+// ---- Insights ----
+async function showInsights(){
+  const t=curT();if(!t)return;const now=Date.now(),st=showInsights.state||(showInsights.state={r:'sel',s:5});
+  const ranges=[['sel','Focus / selected range'],[3600000,'Last hour'],[21600000,'Last 6 hours'],[86400000,'Last 24 hours'],[604800000,'Last 7 days']];
+  const [from,to]=st.r==='sel'?(fixedRange?[fixedRange.from,fixedRange.to]:[now-(+$('#focus').value||3600000),now]):[now-st.r,now];
+  let d;try{d=await api(`/api/targets/${t.id}/insights?from=${from}&to=${to}&sensitivity=${st.s}`)}catch(e){return toast(e.message)}
+  const lv={bad:'var(--bad)',warn:'var(--warn)',ok:'var(--ok)',info:'var(--acc)'};
+  showGen(`Insights – ${t.name||t.host}`,`<div class="row" style="padding-top:0"><label>Period <select id="inR">${ranges.map(([v,l])=>`<option value="${v}" ${String(st.r)===String(v)?'selected':''}>${l}</option>`).join('')}</select></label><span class="mut">${fmtR(from,to)}</span></div>
+   ${d.empty?'<p class="mut">There is no data for this target in the selected period.</p>':`
+   <div>${d.findings.map(x=>`<div class="card" style="margin:8px 0;border-left:4px solid ${lv[x.level]};padding:10px 14px"><b>${esc(x.title)}</b><div style="margin-top:3px">${esc(x.text)}</div></div>`).join('')}</div>
+   <h4>Event detection</h4>
+   <div class="row" style="border:0;padding-top:0"><label>Sensitivity <input id="inS" type="range" min="1" max="10" value="${st.s}" style="width:170px;height:auto"></label><span class="mut">Higher sensitivity lists smaller events. Typical latency: ${f1(d.baseline)} ms.</span></div>
+   <div class="card" style="max-height:220px;overflow:auto"><table><thead><tr><th class="l">Event</th><th class="l">When</th><th>Minutes</th><th>Peak loss</th><th>Peak avg</th><th>Severity</th></tr></thead><tbody>${d.events.map((e,i)=>`<tr data-i="${i}"><td class="l ${e.type==='Latency spike'?'warn':'bad'}">${esc(e.type)}</td><td class="l">${fmtR(e.start,e.end)}</td><td>${e.minutes}</td><td>${e.peakLoss.toFixed(1)}%</td><td>${f1(e.peakAvg)}</td><td>${e.severity}</td></tr>`).join('')||'<tr><td class="l mut" colspan="6">For the selected time period, no significant events were discovered. Select a larger period or raise the sensitivity.</td></tr>'}</tbody></table></div>
+   ${d.best.length?`<h4>Best and worst periods</h4><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px">${[['Best',d.best,'var(--ok)'],['Worst',d.worst,'var(--bad)']].map(([n,l,c])=>`<div class="card"><div class="row"><b style="color:${c}">${n}</b></div>${l.map(p=>`<div class="alert" data-from="${p.start}" data-to="${p.end}" style="cursor:pointer">${fmtR(p.start,p.end)}<br><span class="mut">avg ${f1(p.avg)} ms · loss ${p.lossPct.toFixed(1)}% · MOS ${p.mos.toFixed(2)}</span></div>`).join('')}</div>`).join('')}</div>`:''}
+   <p class="mut">Click an event or period to focus the table and graph on it.</p>`}`);
+  $('#inR').onchange=()=>{st.r=$('#inR').value==='sel'?'sel':+$('#inR').value;showInsights()};
+  const inS=$('#inS');if(inS)inS.onchange=()=>{st.s=+inS.value;showInsights()};
+  if(!d.empty){$('#gBody').querySelectorAll('tr[data-i]').forEach(tr=>tr.onclick=()=>{const e=d.events[+tr.dataset.i];focusOn(e.start,e.end)});
+    $('#gBody').querySelectorAll('[data-from]').forEach(el=>el.onclick=()=>focusOn(+el.dataset.from,+el.dataset.to))}
+}
+
+// ---- export a time range (every sample, or statistics aggregated per period) ----
+const dtLocal=ms=>new Date(ms-new Date(ms).getTimezoneOffset()*60000).toISOString().slice(0,16);
+function showExportRange(){
+  const t=curT();if(!t)return toast('Open a target first');const now=Date.now(),a=fixedRange?fixedRange.from:now-86400000,b=fixedRange?fixedRange.to:now;
+  showGen(`Export time range – ${t.name||t.host}`,`<div class="row"><label class="lw">From</label><input id="exF" type="datetime-local" value="${dtLocal(a)}"></div>
+   <div class="row"><label class="lw">To</label><input id="exT" type="datetime-local" value="${dtLocal(b)}"></div>
+   <div class="row"><label class="lw">Data</label><select id="exM"><option value="samples">Every sample (one row per round, one column per hop)</option><option value="periods">Statistics over time (aggregated per period)</option></select></div>
+   <div class="row" id="exPR"><label class="lw">Period size</label><select id="exP"><option value="300000">5 minutes</option><option value="900000">15 minutes</option><option value="1800000">30 minutes</option><option value="3600000" selected>1 hour</option><option value="21600000">6 hours</option><option value="86400000">1 day</option></select></div>
+   <div class="row"><label class="lw">Format</label><select id="exFmt"><option value="csv">CSV (comma-separated)</option><option value="tsv">Tab-separated text</option></select></div>
+   <p class="mut">Times are in this computer's local time zone. Older data comes from the history database.</p>
+   <div class="row foot"><span class="sp"></span><button id="exGo" class="pri">Export</button></div>`);
+  const sync=()=>{$('#exPR').hidden=$('#exM').value!=='periods'};sync();$('#exM').onchange=sync;
+  $('#exGo').onclick=async()=>{const from=new Date($('#exF').value).getTime(),to=new Date($('#exT').value).getTime();if(!(to>from))return toast('Invalid range: "To" must be after "From"');
+    try{const txt=await api(`/api/targets/${t.id}/exportrange?from=${from}&to=${to}&mode=${$('#exM').value}&period=${$('#exP').value}&format=${$('#exFmt').value}`);
+      dl(`${t.host}-${$('#exM').value==='periods'?'statistics':'samples'}.${$('#exFmt').value==='tsv'?'txt':'csv'}`,typeof txt==='string'?txt:JSON.stringify(txt));$('#dGen').close()}catch(e){toast(e.message)}};
+}
+
+// ---- per-target options: ad hoc vs kept, follow IP changes ----
+function showTargetOptions(){
+  const t=curT();if(!t)return;const literal=/^\d{1,3}(\.\d{1,3}){3}$/.test(t.host)||t.host.includes(':');
+  showGen(`Target options – ${t.name||t.host}`,`<div class="row"><label class="lw">Probe method</label><select id="toProto" ${t.agent?'disabled':''}><option value="icmp">ICMP</option><option value="tcp">TCP</option><option value="udp">UDP</option></select><input id="toPort" type="number" min="1" max="65535" placeholder="dest port" style="width:90px" ${(t.proto==='icmp'||!t.proto)?'hidden':''}><span class="mut">${t.agent?'targets traced by a remote agent keep their original probe':'changing the probe or port re-traces the route from scratch'}</span></div>
+   <div class="row"><label class="lw">Data</label><select id="toP"><option value="local">Keep: saved, restored after restart, kept as a stored session when closed</option><option value="adhoc">Ad hoc: discarded when closed or when PingTracer exits</option></select></div>
+   <div class="row"><label class="lw">Follow IP changes</label><input id="toF" type="checkbox" ${t.followIp?'checked':''} ${literal?'disabled':''}><span class="mut">${literal?'only for hostnames':'look the hostname up every 5 minutes and follow it to a new address'}</span></div>
+   <div class="row foot"><span class="sp"></span><button id="toSave" class="pri">Save</button></div>`);
+  $('#toP').value=t.adhoc?'adhoc':'local';$('#toProto').value=t.proto||'icmp';$('#toPort').value=t.port||'';
+  $('#toProto').onchange=()=>{$('#toPort').hidden=$('#toProto').value==='icmp'};
+  $('#toSave').onclick=async()=>{try{
+    const b={persistence:$('#toP').value,followIp:$('#toF').checked};let probeChanged=false;
+    if(!t.agent){const np=$('#toProto').value;probeChanged=np!==t.proto||np!=='icmp'&&+$('#toPort').value>0&&+$('#toPort').value!==t.port;
+      b.proto=np;if(np!=='icmp'){const p=+$('#toPort').value;if(p>=1&&p<=65535)b.port=p;}}
+    await api(`/api/targets/${t.id}/update`,{b});
+    if(probeChanged)await api(`/api/targets/${t.id}/retrace`,{b:{}}); // fresh route discovery + destination state for the new probe
+    $('#dGen').close();refresh()}catch(e){toast(e.message)}};
+}
+
+// ---- web users ----
+async function showUsers(){
+  let l;try{l=await api('/api/webusers')}catch(e){return toast(e.message)}
+  showGen('Web users',`<p class="mut">People who open PingTracer from another device sign in with a user name and password. <b>Admin</b> users can change everything; <b>viewer</b> users can only look. The access token from Settings keeps working as an admin sign-in.</p>
+   <div class="card">${l.map(x=>`<div class="alert row" style="display:flex"><b>${esc(x.name)}</b><span class="mut">${x.role}</span><span class="sp"></span><button data-pw="${esc(x.name)}">Set password</button><button data-role="${esc(x.name)}" data-to="${x.role==='admin'?'viewer':'admin'}">Make ${x.role==='admin'?'viewer':'admin'}</button><button data-del="${esc(x.name)}">Delete</button></div>`).join('')||'<div class="alert mut">No web users yet.</div>'}</div>
+   <h4>Add a user</h4><div class="row"><input id="uN" placeholder="User name" autocomplete="off"><input id="uP" type="password" placeholder="Password (8+ characters)" autocomplete="new-password"><select id="uR"><option value="viewer">Viewer (read-only)</option><option value="admin">Admin</option></select><button id="uAdd" class="pri">Add</button></div>`);
+  const go=async f=>{try{await f();showUsers()}catch(e){toast(e.message)}},enc=encodeURIComponent;
+  $('#uAdd').onclick=()=>go(()=>api('/api/webusers',{b:{name:$('#uN').value,password:$('#uP').value,role:$('#uR').value}}));
+  $('#gBody').querySelectorAll('[data-pw]').forEach(b=>b.onclick=()=>{const p=prompt(`New password for ${b.dataset.pw} (8+ characters):`);if(p)go(()=>api('/api/webusers/'+enc(b.dataset.pw),{m:'PUT',b:{password:p}}))});
+  $('#gBody').querySelectorAll('[data-role]').forEach(b=>b.onclick=()=>go(()=>api('/api/webusers/'+enc(b.dataset.role),{m:'PUT',b:{role:b.dataset.to}})));
+  $('#gBody').querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>{if(confirm('Delete web user '+b.dataset.del+'?'))go(()=>api('/api/webusers/'+enc(b.dataset.del),{m:'DELETE'}))});
+}
+
+// ---- LiveShare read-only links ----
+async function showShares(){
+  let l,web=null;try{l=await api('/api/liveshares');web=(await api('/api/settings')).web}catch(e){return toast(e.message)}
+  const t=curT(),sid=typeof cur==='string'?cur.slice(2):null;
+  showGen('LiveShare links',`${web&&web.enabled?'':'<div class="card" style="border-left:4px solid var(--warn);padding:10px 14px;margin-bottom:10px">LiveShare links are served through <b>Web access (HTTPS)</b>, which is turned off. Turn it on in Settings so others can open the links.</div>'}
+   <p class="mut">LiveShare creates read-only links to share live trace data. Anyone with the link (and the password, if you set one) can watch the shared targets but cannot change anything.</p>
+   <div class="card" style="max-height:260px;overflow:auto">${l.map(x=>`<div class="alert"><div class="row" style="padding:0;border:0"><b>${esc(x.name)}</b><span class="mut">${x.summaryId?'summary':x.tids.length+' target'+(x.tids.length===1?'':'s')} · ${x.hasPassword?'password protected':'no password'} · ${x.expires?'expires '+new Date(x.expires).toLocaleString():'never expires'}</span><span class="sp"></span>${x.urls.length?`<button data-copy="${esc(x.urls[0])}">Copy link</button>`:''}<button data-del="${esc(x.id)}">Delete</button></div>${x.urls.map(u=>`<code style="display:block;margin-top:5px;user-select:all;overflow-wrap:anywhere">${esc(u)}</code>`).join('')}</div>`).join('')||'<div class="alert mut">No LiveShare links yet.</div>'}</div>
+   <h4>New LiveShare link</h4>
+   <div class="row"><label class="lw">Name</label><input id="lsN" value="${esc(t?(t.name||t.host):(summaries.find(s=>s.id===sid)||{}).name||'Shared view')}"></div>
+   <div class="row"><label class="lw">Share</label><select id="lsS">${t?`<option value="t:${t.id}">This target (${esc(t.host)})</option>`:''}${summaries.map(s=>`<option value="s:${esc(s.id)}" ${sid===s.id?'selected':''}>Summary: ${esc(s.name)}</option>`).join('')}<option value="all">All open targets</option></select></div>
+   <div class="row"><label class="lw">Password (optional)</label><input id="lsP" type="password" autocomplete="new-password"></div>
+   <div class="row"><label class="lw">Expires (optional)</label><input id="lsE" type="datetime-local"></div>
+   <div class="row foot"><span class="sp"></span><button id="lsAdd" class="pri">Create link</button></div>`);
+  $('#gBody').querySelectorAll('[data-copy]').forEach(b=>b.onclick=async()=>{try{await navigator.clipboard.writeText(b.dataset.copy);toast('Link copied')}catch{toast('Copy the link from the list')}});
+  $('#gBody').querySelectorAll('[data-del]').forEach(b=>b.onclick=async()=>{if(confirm('Permanently delete this LiveShare link? People using it lose access.')){await api('/api/liveshares/'+b.dataset.del,{m:'DELETE'});showShares()}});
+  $('#lsAdd').onclick=async()=>{const v=$('#lsS').value,body={name:$('#lsN').value,password:$('#lsP').value||undefined,expires:$('#lsE').value?new Date($('#lsE').value).getTime():undefined};
+    if(v.startsWith('t:'))body.tids=[+v.slice(2)];else if(v.startsWith('s:'))body.summaryId=v.slice(2);else body.tids=targets.map(x=>x.id);
+    try{await api('/api/liveshares',{b:body});showShares()}catch(e){toast(e.message)}};
+}
+
+// ---- who is signed in: read-only mode for viewers and LiveShare visitors ----
+async function applyRole(){
+  try{me=await api('/api/whoami')}catch{return}
+  document.body.classList.toggle('ro',me.role!=='admin');
+  const w=$('#whoBar');if(me.local){w.innerHTML='';return}
+  w.innerHTML=(me.share?`<span class="mut">LiveShare · ${esc(me.share.name)} · read-only</span>`:`<span class="mut">${esc(me.user==='token'?'Access token':me.user)}${me.role==='viewer'?' · read-only':''}</span>`+(me.user&&me.user!=='token'?' <button class="ghost" id="chgPw">Change password</button>':''))+' <a class="ghost-link" href="/logout">Sign out</a>';
+  const c=$('#chgPw');if(c)c.onclick=async()=>{const cu=prompt('Current password:');if(!cu)return;const n=prompt('New password (8+ characters):');if(!n)return;try{await api('/api/me/password',{b:{current:cu,next:n}});toast('Password changed')}catch(e){toast(e.message)}};
+}
+applyRole();
+
+// ---- recent targets (suggestions in the target box) ----
+function fillRecent(){$('#recentHostList').innerHTML=LS_get('recentHosts',[]).map(h=>`<option value="${esc(h)}">`).join('')}
+function addRecent(h){LS_set('recentHosts',[h,...LS_get('recentHosts',[]).filter(x=>x!==h)].slice(0,20));fillRecent()}
+fillRecent();
+
+// ---- sortable summary / All Targets table ----
+function sortRows(rows){const s=LS_get('ovSort',null);if(!s)return rows;const key={host:r=>r.host.toLowerCase(),status:r=>r.running?0:1,avg:r=>r.stats?.avg??Infinity,cur:r=>r.stats?.cur??Infinity,loss:r=>r.stats?.lossPct??-1,jitter:r=>r.stats?.jitter??Infinity,mos:r=>r.stats?.mos??-1}[s.k];
+  if(!key)return rows;return rows.slice().sort((a,b)=>{const x=key(a),y=key(b);return (x<y?-1:x>y?1:0)*s.d})}
+$('#ovtable thead').onclick=e=>{const th=e.target.closest('th[data-k]');if(!th)return;const s=LS_get('ovSort',null),k=th.dataset.k;LS_set('ovSort',{k,d:s&&s.k===k?-s.d:1});
+  $('#ovtable thead').querySelectorAll('th[data-k]').forEach(x=>x.classList.toggle('sorted',x.dataset.k===k));renderOverview()};
+
+$('#bInsights').onclick=showInsights;$('#bOpts').onclick=showTargetOptions;$('#w_users').onclick=()=>{$('#dSet').close();showUsers()};
+// ---- menu actions ----
+const dl=(name,text,type='text/plain')=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([text],{type}));a.download=name;a.click()};
+let importKind=null;
+document.querySelectorAll('.menu button[data-a]').forEach(b=>b.onclick=async()=>{
+  const a=b.dataset.a,t=curT(),foc=$('#focus').value;document.activeElement.blur();
+  try{
+  if(a.startsWith('txt')||a==='csv'){if(!t)return toast('No target');const fmt=a==='csv'?'csv':a==='txt-wide'?'wide':'long';
+    dl(`${t.host}-${a==='txt-stats'?'stats':'samples'}.${a==='csv'?'csv':'txt'}`,await api(`/api/targets/${t.id}/export?focus=${foc}&format=${fmt}&all=${a==='txt-stats'?0:1}`))}
+  else if(a==='json'){if(!t)return toast('No target');dl(`${t.host}-results.json`,JSON.stringify(await api(`/api/targets/${t.id}/export?focus=${foc}&format=json&all=1`),null,2),'application/json')}
+  else if(a==='clip-text'){if(!t)return;await navigator.clipboard.writeText(await api(`/api/targets/${t.id}/export?focus=${foc}`));toast('Copied')}
+  else if(a==='set-save'){const n=prompt('Name for this sample set:',t?t.host:'sampleset');if(!n)return;await api('/api/sets',{b:{name:n,targetId:t?.id}});toast('Saved '+n)}
+  else if(a==='set-recent'){const l=await api('/api/sets');$('#recentList').innerHTML=l.map(x=>`<div class="alert row" style="border-bottom:1px solid var(--bd)"><b>${esc(x.name)}</b><span class="mut">${new Date(x.mtime).toLocaleString()} · ${(x.size/1024).toFixed(0)} KB</span><span class="sp"></span><button data-o="${esc(x.name)}">Open</button><button data-d="${esc(x.name)}">Delete</button></div>`).join('')||'<div class="alert mut">No saved sets yet (File ▸ Save sample set).</div>';
+    $('#recentList').querySelectorAll('button').forEach(bt=>bt.onclick=async()=>{const nm=bt.dataset.o||bt.dataset.d;if(bt.dataset.o){await api('/api/sets/'+encodeURIComponent(nm),{b:{}});$('#dRecent').close();toast('Opened '+nm);refresh()}else if(confirm('Delete '+nm+'?')){await api('/api/sets/'+encodeURIComponent(nm),{m:'DELETE'});bt.closest('.row').remove()}});$('#dRecent').showModal()}
+  else if(a==='email'){if(!t)return toast('No target');const r=await api('/api/email/report',{b:{targetId:t.id,focus:+foc}});toast(r.ok?'Report emailed':'Email failed: '+r.error)}
+  else if(a==='img-clip'){if(!t)return;const bl=await imgBlob(t);await navigator.clipboard.write([new ClipboardItem({'image/png':bl})]);toast('Image copied')}
+  else if(a==='sessions')await showSessions();
+  else if(a==='workspaces')await showWorkspaces();
+  else if(a==='range-exp')showExportRange();
+  else if(a==='liveshare')await showShares();
+  else if(a==='quit'){if(confirm('Quit PingTracer? Monitoring will stop.')){await api('/api/quit',{b:{}}).catch(()=>{});document.body.innerHTML='<p style="padding:24px">PingTracer has exited. You can close this tab.</p>'}}
+  else if(a==='set-out')dl('sampleset.pp.json',JSON.stringify(await api('/api/sampleset')),'application/json');
+  else if(a==='list-out')dl('targets.txt',await api('/api/targetlist'));
+  else if(a==='set-in'||a==='list-in'){importKind=a;$('#file').click()}
+  else if(a==='img'){if(!t)return;const bl=await imgBlob(t);const l=document.createElement('a');l.href=URL.createObjectURL(bl);l.download=t.host+'.png';l.click()}
+  }catch(e){toast(e.message)}});
+function imgBlob(t){return new Promise(res=>{const cv=$('#tg'),o=document.createElement('canvas'),rows=t.hops.length,c=o.getContext('2d');
+  o.width=Math.max(cv.width,900);o.height=cv.height+40+rows*18;c.fillStyle='#fff';c.fillRect(0,0,o.width,o.height);c.fillStyle='#000';c.font='13px monospace';
+  c.fillText(`PingTracer – ${t.host} (${t.ip}) ${new Date().toLocaleString()}`,8,16);
+  t.hops.forEach((h,i)=>c.fillText(`${String(h.ttl).padStart(2)}  ${(h.ip||'*').padEnd(16)} ${(h.name||'').slice(0,28).padEnd(28)} avg ${f1(h.stats.avg)}  min ${f1(h.stats.min)}  max ${f1(h.stats.max)}  loss ${h.stats.lossPct.toFixed(1)}%`,8,36+i*18));
+  c.fillStyle='#fff';c.fillRect(0,40+rows*18,cv.width,cv.height);c.drawImage(cv,0,40+rows*18);o.toBlob(res)})}
+// ---- View / Help menus, theme, columns ----
+const LS={get(k,d){try{return JSON.parse(localStorage.getItem(k))??d}catch{return d}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch{}}};
+const BASECOLS=['Hop','IP','Name','Avg','Min','Max','Cur','PL%','Err','Jitter','MOS','Count'];
+function applyCols(){const hid=LS.get('hiddenCols',[]);const all=[...BASECOLS,...extCols.map(c=>c.title)];
+  $('#colList').innerHTML=all.map((n,i)=>`<label style="display:block"><input type="checkbox" data-i="${i}" ${hid.includes(n)?'':'checked'}> ${esc(n)}</label>`).join('');
+  $('#colList').querySelectorAll('input').forEach(cb=>cb.onchange=()=>{const h=new Set(LS.get('hiddenCols',[])),n=all[+cb.dataset.i];cb.checked?h.delete(n):h.add(n);LS.set('hiddenCols',[...h]);applyCols()});
+  let css='';all.forEach((n,i)=>{if(hid.includes(n))css+=`#tt th:nth-child(${i+1}),#tt td:nth-child(${i+1}){display:none}`});$('#colstyle').textContent=css}
+document.head.insertAdjacentHTML('beforeend','<style id="colstyle"></style>');
+// resizable graph + panel order
+function applyOrder(){const gf=LS.get('graphFirst',false);$('#graphCard').style.order=gf?1:3;$('#traceCard').style.order=gf?3:1;$('#split').style.order=2;$('#overview').style.order=0;$('#empty').style.order=0;}
+const gh=LS.get('graphH',260);$('#tg').style.height=gh+'px';applyOrder();
+$('#split').onmousedown=e=>{e.preventDefault();const y0=e.clientY,h0=$('#tg').clientHeight,sign=LS.get('graphFirst',false)?-1:1; // graph below the table: dragging up grows it; above: dragging down grows it
+  const mv=ev=>{const h=Math.max(120,Math.min(800,h0+sign*(y0-ev.clientY)));$('#tg').style.height=h+'px';drawGraph()};
+  const up=()=>{removeEventListener('mousemove',mv);removeEventListener('mouseup',up);LS.set('graphH',$('#tg').clientHeight)};addEventListener('mousemove',mv);addEventListener('mouseup',up)};
+if(LS.get('theme'))document.documentElement.dataset.theme=LS.get('theme');
+document.querySelectorAll('[data-v]').forEach(b=>b.onclick=()=>{const v=b.dataset.v;document.activeElement.blur();
+  if(v==='theme'){const dark=(document.documentElement.dataset.theme||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light'))==='dark';document.documentElement.dataset.theme=dark?'light':'dark';LS.set('theme',dark?'light':'dark');drawGraph()}
+  else if(v==='full'){document.fullscreenElement?document.exitFullscreen():document.documentElement.requestFullscreen()}
+  else if(v==='tile'){LS.set('tileOverview',!LS.get('tileOverview',false));renderTable()}
+  else if(v==='order'){const up=!LS.get('graphFirst',false);LS.set('graphFirst',up);applyOrder()}
+  else if(v==='graph'){const g=$('#graphCard');g.dataset.off=g.dataset.off?'':'1';LS.set('hideGraph',!!g.dataset.off);renderTable()}});
+const HELP={
+ start:['Getting started','<p><b>1.</b> Type a hostname or IP and press <b>Trace</b>. The route is discovered and every hop is pinged continuously.</p><p><b>2.</b> Click a hop to graph it; right-click to hide it; double-click a name to rename it. Use <b>Focus</b> to change the statistics window.</p><p><b>3.</b> <b>Alerts</b> can notify, run a program, call a webhook or send email. <b>File</b> has exports, saved sample sets and an email report. <b>Remote…</b> traces from another machine running <code>PingTracer.exe --agent</code>.</p><p><b>4.</b> <b>Insights</b> explains where problems start and lists events. Drag across the graph to focus on a time range; ◀ ▶ move back and forth in time.</p>'],
+ keys:['Keyboard shortcuts','<p><b>/</b> focus the target box · <b>Space</b> pause / resume · <b>← →</b> switch target · <b>↑ ↓</b> select hop · <b>F11</b> full screen</p>']};
+document.querySelectorAll('[data-h]').forEach(b=>b.onclick=()=>{document.activeElement.blur();const h=b.dataset.h;if(h==='docs')return window.open('/docs.html','_blank');if(h==='guides')return showGuides();
+  $('#hTitle').textContent=HELP[h][0];$('#hBody').innerHTML=HELP[h][1];$('#dHelp').showModal()});
+document.addEventListener('keydown',e=>{if(/INPUT|TEXTAREA|SELECT/.test(e.target.tagName)||document.querySelector('dialog[open]'))return;
+  const t=curT();
+  if(e.key==='/'){e.preventDefault();$('#host').focus()}
+  else if(e.key===' '){e.preventDefault();$('#pause').click()}
+  else if(e.key==='ArrowRight'||e.key==='ArrowLeft'){const i=targets.findIndex(x=>x.id===cur),n=targets[(i+(e.key==='ArrowRight'?1:-1)+targets.length)%targets.length];if(n){cur=n.id;selHop=null;refresh()}}
+  else if((e.key==='ArrowDown'||e.key==='ArrowUp')&&t){const i=t.hops.findIndex(h=>h.ttl===selHop),n=t.hops[Math.max(0,Math.min(t.hops.length-1,i+(e.key==='ArrowDown'?1:-1)))];if(n){selHop=n.ttl;renderTable();drawGraph()}}});
+if(!LS.get('welcomed')){LS.set('welcomed',true);setTimeout(()=>{$('#hTitle').textContent=HELP.start[0];$('#hBody').innerHTML=HELP.start[1];$('#dHelp').showModal()},400)}
+$('#file').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(!f)return;const text=await f.text();
+  try{if(importKind==='sum-load'){const r=await api('/api/summaries/'+sumLoadId+'/loadlist',{b:{text}});toast('Added '+r.added.length+' target(s)')}
+  else if(importKind==='ws-import'){const r=await api('/api/workspaces',{b:{action:'import',data:JSON.parse(text),history:wsHist}});toast('Imported workspace '+r.name);if($('#dGen').open)showWorkspaces()}
+  else if(importKind==='list-in'){const r=await api('/api/targetlist',{b:{text}});toast(`Added ${r.added.length} target(s)`)}
+  else{await api('/api/sampleset',{b:JSON.parse(text)});toast('Sample set loaded')}refresh()}catch(err){toast(err.message)}};
+// ---- alerts ----
+const metrics=[['avg','Avg latency (ms) >'],['loss','Packet loss (%) >'],['jitter','Jitter (ms) >'],['mos','MOS <']];
+function ruleRow(r){return `<div class="row" data-id="${r.id}"><input type="checkbox" class="en" ${r.enabled?'checked':''}>
+ <select class="mt">${metrics.map(([v,l])=>`<option value="${v}" ${r.metric===v?'selected':''}>${l}</option>`).join('')}</select>
+ <input class="th" type="number" step="any" value="${r.threshold}" style="width:80px"> over <input class="ws" type="number" value="${r.windowSec||60}" style="width:60px">s on hop <input class="hp" value="${r.hop||'final'}" style="width:60px" title="'final' or hop number">
+ <select class="ac"><option value="notify" ${r.action==='notify'?'selected':''}>Notify</option><option value="command" ${r.action==='command'?'selected':''}>Run program</option><option value="webhook" ${r.action==='webhook'?'selected':''}>Webhook (POST JSON)</option><option value="email" ${r.action==='email'?'selected':''}>Send email (see Settings)</option></select>
+ <select class="sd" title="Sound for this rule">${Object.entries(SOUNDS).map(([v,l])=>`<option value="${v}" ${(r.sound||'beep')===v?'selected':''}>${l}</option>`).join('')}</select><button class="sp1" title="Preview">▶</button>
+ <input class="cm" placeholder="program path or https:// URL" value="${esc(r.command||'')}" style="width:150px"><button class="rm">✕</button></div>`}
+async function openAlerts(){settings=await api('/api/settings');$('#rules').innerHTML=settings.alertRules.map(ruleRow).join('')||'<div class="mut" style="padding:8px">No rules yet.</div>';bindRules();$('#dAlerts').showModal();showLog()}
+function bindRules(){$('#rules').querySelectorAll('.rm').forEach(b=>b.onclick=()=>b.closest('.row').remove());$('#rules').querySelectorAll('.sp1').forEach(b=>b.onclick=()=>playSound(b.closest('.row').querySelector('.sd').value))}
+$('#sndSel').innerHTML=Object.entries(SOUNDS).map(([v,l])=>`<option value="${v}">${l}</option>`).join('');$('#sndSel').value=LS_get('sound','beep');
+$('#sndSel').onchange=()=>LS_set('sound',$('#sndSel').value);$('#sndTest').onclick=()=>playSound($('#sndSel').value);
+function LS_get(k,d){try{return JSON.parse(localStorage.getItem(k))??d}catch{return d}}function LS_set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch{}}
+$('#addRule').onclick=()=>{$('#rules').insertAdjacentHTML('beforeend',ruleRow({id:'r'+Date.now(),enabled:true,metric:'avg',threshold:150,windowSec:60,hop:'final',action:'notify'}));bindRules()};
+$('#saveRules').onclick=async()=>{const rules=[...$('#rules').querySelectorAll('.row')].map(r=>({id:r.dataset.id,enabled:r.querySelector('.en').checked,metric:r.querySelector('.mt').value,threshold:+r.querySelector('.th').value,windowSec:+r.querySelector('.ws').value||60,hop:r.querySelector('.hp').value||'final',action:r.querySelector('.ac').value,sound:r.querySelector('.sd').value,command:r.querySelector('.cm').value}));
+  await api('/api/settings',{b:{alertRules:rules}});toast('Alert rules saved');
+  if($('#notif').checked&&Notification.permission==='default')Notification.requestPermission()};
+$('#alertsBtn').onclick=openAlerts;
+$('#aboutBtn').onclick=async()=>{try{const i=await api('/api/info');$('#eng').textContent=i.engine==='helper'?'native helper (accurate per-hop RTT)':'system ping (approximate per-hop RTT)';$('#ddir').textContent=i.data;const ifs=await api('/api/interfaces');$('#ifl').innerHTML=ifs.map(x=>`<div><b>${esc(x.name)}</b> ${x.addresses.filter(a=>!a.internal).map(a=>esc(a.address)).join(', ')}</div>`).join('')}catch{}$('#dAbout').showModal()};
+$('#overlay').onchange=drawGraph;
+// ---- LAN discovery panel ----
+async function lanRefresh(){
+  let l;try{l=await api('/api/lan')}catch(e){return toast(e.message)}
+  $('#lan_sub').textContent=l.subnet?'· '+l.subnet:'';
+  $('#lan_prog').textContent=l.state==='scanning'?`Scanning… ${l.progress}%`:l.state==='error'?'Error: '+l.error:l.state==='done'?`${l.devices.length} devices`:'';
+  $('#lan_scan').disabled=l.state==='scanning';
+  $('#lan_tab tbody').innerHTML=l.devices.map(d=>{const sv=[d.ssdp?.server||d.ssdp?.st,...(d.mdns||[]).slice(0,4)].filter(Boolean).map(esc).join(' · ');
+    return `<tr><td class="l">${esc(d.ip)}</td><td class="l">${esc(d.mac||'')}</td><td class="l">${esc(d.vendor||'')}</td><td class="l">${esc(d.name||'')}</td><td>${d.rtt!=null?d.rtt.toFixed(1):'–'}</td><td class="l" style="white-space:normal;max-width:300px">${sv}</td><td><button data-ip="${esc(d.ip)}">Trace</button></td></tr>`}).join('')||`<tr><td class="l mut" colspan="7">${l.state==='scanning'?'Working…':'Press Scan network.'}</td></tr>`;
+  $('#lan_tab tbody').querySelectorAll('button').forEach(b=>b.onclick=async()=>{try{const t=await api('/api/targets',{b:{host:b.dataset.ip}});cur=t.id;selHop=null;$('#dLan').close();refresh()}catch(e){toast(e.message)}});
+  return l.state;
+}
+$('#lanBtn').onclick=()=>{$('#dLan').showModal();lanRefresh()};
+$('#lan_scan').onclick=async()=>{await api('/api/lan',{b:{}});clearInterval(lanRefresh.t);lanRefresh.t=setInterval(async()=>{const s=await lanRefresh();if(s!=='scanning'||!$('#dLan').open)clearInterval(lanRefresh.t)},1000)};
+$('#lan_oui').onclick=async()=>{if(!confirm('Download the public IEEE MAC vendor list (about 6 MB) from standards-oui.ieee.org?'))return;try{const r=await api('/api/lan/oui',{b:{}});toast('Vendor database installed: '+r.entries+' entries');lanRefresh()}catch(e){toast(e.message)}};
+// ---- Wi-Fi panel ----
+async function wifiRefresh(scan){
+  let w;try{w=await api('/api/wifi?window='+$('#wf_win').value+(scan?'&scan=1':''))}catch(e){return toast(e.message)}
+  $('#wf_en').checked=w.enabled;const c=w.current;
+  $('#wf_cur').innerHTML=!w.supported?'<span class="bad">Wi-Fi monitoring is only available on Windows.</span>':w.error?`<span class="bad">${esc(w.error)}</span>`:c?`<b>${esc(c.ssid||'(not connected)')}</b> · ${esc(c.state||'')} · signal <b>${c.signal??'–'}%</b> · ch ${esc(c.channel||'–')} · ${esc(c.radio||'')} · ${c.rx??'–'}/${c.tx??'–'} Mbps · ${esc(c.bssid||'')}`:'<span class="mut">Enable monitoring to see the connection.</span>';
+  const cv=$('#wf_g'),dpr=devicePixelRatio||1,W=cv.clientWidth,H=cv.clientHeight;cv.width=W*dpr;cv.height=H*dpr;const g=cv.getContext('2d');g.scale(dpr,dpr);
+  const cs=getComputedStyle(document.documentElement),mut=cs.getPropertyValue('--mut'),bd=cs.getPropertyValue('--bd'),acc=cs.getPropertyValue('--acc');
+  const L=34,B=18,T=8,R=8,pw=W-L-R,ph=H-T-B,win=+$('#wf_win').value,now=Date.now();g.font='11px system-ui';g.fillStyle=mut;g.strokeStyle=bd;g.textAlign='right';
+  for(let i=0;i<=4;i++){const y=T+ph-ph*i/4;g.beginPath();g.moveTo(L,y);g.lineTo(W-R,y);g.stroke();g.fillText(i*25+'%',L-4,y+3)}
+  g.strokeStyle=acc;g.lineWidth=1.8;g.beginPath();let pen=false;w.history.forEach(h=>{const x=L+(h.t-(now-win))/win*pw,y=T+ph-h.signal/100*ph;pen?g.lineTo(x,y):g.moveTo(x,y);pen=true});g.stroke();
+  $('#wf_tab tbody').innerHTML=w.neighbors.map(n=>`<tr><td class="l">${esc(n.ssid||'(hidden)')}</td><td class="l">${esc(n.bssid)}</td><td>${n.signal??'–'}%</td><td>${esc(n.band||'')}</td><td>${n.channel??''}</td><td class="l">${esc(n.radio||'')}</td><td class="l">${esc(n.auth||'')}</td></tr>`).join('')||'<tr><td class="l mut" colspan="7">Press Scan.</td></tr>';
+}
+$('#wifiBtn').onclick=()=>{$('#dWifi').showModal();wifiRefresh(false);clearInterval(wifiRefresh.t);wifiRefresh.t=setInterval(()=>{if($('#dWifi').open)wifiRefresh(false);else clearInterval(wifiRefresh.t)},5000)};
+$('#wf_en').onchange=async()=>{await api('/api/wifi',{b:{enabled:$('#wf_en').checked}});setTimeout(()=>wifiRefresh(false),1500)};
+$('#wf_scan').onclick=()=>wifiRefresh(true);$('#wf_win').onchange=()=>wifiRefresh(false);
+let extCols=[];
+const loadExt=async(reload)=>{try{const e=await api('/api/extensions',reload?{b:{}}:undefined);extCols=e.flatMap(x=>x.columns);setTimeout(()=>{try{applyCols()}catch{}},0);const bad=e.filter(x=>x.error);if(bad.length)toast('Extension error: '+bad[0].file+': '+bad[0].error);return e}catch{return[]}};
+loadExt();
+$('#remoteBtn').onclick=async()=>{
+  const url=prompt('Agent URL (e.g. http://192.168.1.50:8766):');if(!url)return;
+  const token=prompt('Agent token (printed by the agent on start):');if(token==null)return;
+  const host=prompt('Hostname or IP to trace from that agent:','8.8.8.8');if(!host)return;
+  try{const t=await api('/api/targets',{b:{host,agent:{url,token}}});cur=t.id;selHop=null;refresh()}catch(e){toast(e.message)}};
+$('#setBtn').onclick=async()=>{const s=await api('/api/settings');$('#s_int').value=s.intervalMs;$('#s_to').value=s.timeoutMs;$('#s_ps').value=s.packetSize;$('#s_mh').value=s.maxHops;$('#s_ms').value=s.maxSamples;$('#s_hd').value=s.historyDays||30;
+  $('#s_tray').checked=s.trayAlerts!==false;$('#s_open').value=s.openMode||'app';$('#s_ipv').value=s.ipVersion||'auto';$('#s_start').checked=!!s.startWithWindows;$('#webSec').hidden=!s.web;if(s.web){wnew=false;$('#w_en').checked=s.web.enabled;$('#w_port').value=s.web.port;
+    $('#w_info').innerHTML=s.web.enabled?(s.web.error?`<span class="bad">${esc(s.web.error)}</span>`:`Open <b>${(s.web.urls||[]).map(esc).join('</b> or <b>')||'https://&lt;this-pc&gt;:'+s.web.port}</b> and sign in with token: <code>${esc(s.web.token)}</code>`):'Disabled.'}const m=s.smtp||{};$('#m_host').value=m.host||'';$('#m_port').value=m.port||'';$('#m_ssl').checked=!!m.ssl;$('#m_user').value=m.user||'';$('#m_pass').value='';$('#m_pass').placeholder=m.passSet?'(unchanged)':'';$('#m_from').value=m.from||'';$('#m_to').value=m.to||'';$('#dSet').showModal()};
+let wnew=false;$('#w_new').onclick=()=>{wnew=true;$('#w_info').textContent='A new token will be generated when you press Save.'};
+const smtpBody=()=>({host:$('#m_host').value,port:+$('#m_port').value||25,ssl:$('#m_ssl').checked,user:$('#m_user').value,pass:$('#m_pass').value,from:$('#m_from').value,to:$('#m_to').value});
+$('#m_test').onclick=async()=>{try{await api('/api/settings',{b:{smtp:smtpBody()}});$('#m_pass').value='';const r=await api('/api/email/test',{b:{}});toast(r.ok?'Test email sent':'Email failed: '+r.error)}catch(e){toast(e.message)}};
+$('#s_save').onclick=async()=>{try{const s=await api('/api/settings',{b:{intervalMs:+$('#s_int').value,timeoutMs:+$('#s_to').value,packetSize:+$('#s_ps').value,maxHops:+$('#s_mh').value,maxSamples:+$('#s_ms').value,historyDays:+$('#s_hd').value||30,trayAlerts:$('#s_tray').checked,openMode:$('#s_open').value,ipVersion:$('#s_ipv').value,startWithWindows:$('#s_start').checked,smtp:smtpBody(),...($('#webSec').hidden?{}:{web:{enabled:$('#w_en').checked,port:+$('#w_port').value||8767,newToken:wnew}})}});$('#interval').value=INT.some(x=>x[1]===s.intervalMs)?s.intervalMs:$('#interval').value;$('#dSet').close();toast(s.startError?'Saved, but "Start with Windows": '+s.startError:'Settings saved')}catch(e){toast(e.message)}};
+async function showLog(){const l=await api('/api/alerts');$('#alog').innerHTML=l.slice().reverse().map(a=>`<div class="alert ${a.action==='recovered'?'':'bad'}">${new Date(a.t).toLocaleTimeString()} – ${esc(a.message)}</div>`).join('')||'<div class="alert mut">None</div>'}
+function playSound(name){ // synthesized with Web Audio (no audio files)
+  if(name==='none')return;try{
+    const c=new (window.AudioContext||window.webkitAudioContext)(),t0=c.currentTime,out=c.createGain();out.connect(c.destination);out.gain.value=.5;
+    const tone=(f,type,start,dur,vol,decay)=>{const o=c.createOscillator(),g=c.createGain();o.type=type;o.frequency.value=f;o.connect(g);g.connect(out);
+      g.gain.setValueAtTime(0,t0+start);g.gain.linearRampToValueAtTime(vol,t0+start+.01);g.gain.exponentialRampToValueAtTime(.0001,t0+start+(decay||dur));o.start(t0+start);o.stop(t0+start+dur+.05);return o};
+    let end=.5;
+    if(name==='buzzer'){const o=tone(140,'square',0,.7,.5,.7),l=c.createOscillator(),lg=c.createGain();l.frequency.value=22;lg.gain.value=40;l.connect(lg);lg.connect(o.frequency);l.start(t0);l.stop(t0+.75);end=.8}
+    else if(name==='bell'){[1,2.76,5.4,8.93].forEach((m,i)=>tone(110*m,'sine',0,2.6,.5/(i+1),2.5));end=2.7}
+    else if(name==='goblet'){tone(1320,'sine',0,.9,.5,.9);tone(1980,'sine',0,.5,.2,.5);tone(3300,'sine',0,.25,.08,.25);end=1}
+    else if(name==='sonar'){[0,.55].forEach((s,i)=>{tone(880,'sine',s,.18,.5/(i+1),.2);tone(880,'sine',s+.3,.12,.2/(i+1),.15)});end=1.2}
+    else if(name==='tibetan'){[[220,.5],[221.5,.5],[440,.2],[660,.1],[1180,.05]].forEach(([f,v])=>tone(f,'sine',0,3.6,v,3.5));end=3.7}
+    else tone(880,'sine',0,.25,.4,.25);
+    setTimeout(()=>c.close(),(end+.3)*1000);
+  }catch{}}
+const beep=()=>playSound($('#sndSel')?.value||'beep');
+async function pollAlerts(){try{const l=await api('/api/alerts');const n=l.filter(a=>a.t>lastAlertT&&a.action!=='recovered');
+  if(lastAlertT&&n.length){if($('#snd').checked)playSound(n[n.length-1].sound||$('#sndSel').value);n.forEach(a=>{toast(a.message);if($('#notif').checked&&Notification.permission==='granted')new Notification('PingTracer',{body:a.message})})}
+  if(l.length)lastAlertT=l[l.length-1].t;else if(!lastAlertT)lastAlertT=Date.now();
+  const recent=l.filter(a=>a.action!=='recovered'&&a.t>Date.now()-3600000).length;$('#abadge').textContent=recent?`(${recent})`:''}catch{}}
+addEventListener('pagehide',()=>{try{navigator.sendBeacon('/api/closed','')}catch{}});
+api('/api/settings').then(s=>{settings=s;$('#interval').value=s.intervalMs}).catch(()=>{});
+api('/api/info').then(i=>{$('#verTag').textContent='v'+i.version}).catch(()=>{});
+// Poll every 1.5 s while visible; when the window is hidden or minimized only check alerts occasionally, and refresh immediately when it comes back.
+let hiddenTick=0;refresh();setInterval(()=>{if(document.hidden){if(++hiddenTick%7===0)pollAlerts();return}hiddenTick=0;if(!paused)refresh()},1500);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!paused)refresh()});window.onresize=drawGraph;
+/* elevator scrollbar: main keeps native scrolling (wheel/trackpad/keys all
+   work unchanged); this mirrors it at the window edge and is hidden while
+   the content fits. Page-lifetime singleton: listeners are never re-bound. */
+(function(){
+const mn=document.getElementById('main'),el=document.getElementById('elev'),thb=el.querySelector('.thb'),trk=el.querySelector('.trk');
+let raf=0,drag=null;
+function geo(){const r=mn.getBoundingClientRect();el.style.top=r.top+'px';el.style.height=r.height+'px';}
+function sync(){
+ const vh=mn.clientHeight,max=mn.scrollHeight-vh;
+ if(max<=1){el.classList.remove('on');return;}
+ el.classList.add('on');
+ const h=Math.max(28,Math.round(vh*vh/mn.scrollHeight)),y=Math.round(mn.scrollTop/max*(vh-h));
+ thb.style.height=h+'px';thb.style.transform='translateY('+y+'px)';
+ thb.setAttribute('aria-valuenow',String(Math.round(mn.scrollTop/max*100)));
+}
+function upd(){ if(document.hidden){geo();sync();return;} if(raf)return;raf=requestAnimationFrame(()=>{raf=0;geo();sync();});}
+mn.addEventListener('scroll',sync,{passive:true});
+window.addEventListener('resize',upd,{passive:true});
+new ResizeObserver(upd).observe(mn);
+new MutationObserver(upd).observe(mn,{childList:true,subtree:true});
+thb.addEventListener('pointerdown',e=>{e.preventDefault();try{thb.setPointerCapture(e.pointerId);}catch(_){}thb.classList.add('drag');drag={y:e.clientY,top:mn.scrollTop};});
+thb.addEventListener('pointermove',e=>{if(!drag)return;const vh=mn.clientHeight,max=mn.scrollHeight-vh;mn.scrollTop=drag.top+(e.clientY-drag.y)*max/Math.max(1,vh-thb.offsetHeight);});
+const endDrag=()=>{if(!drag)return;drag=null;thb.classList.remove('drag');};
+thb.addEventListener('pointerup',endDrag);thb.addEventListener('pointercancel',endDrag);
+trk.addEventListener('pointerdown',e=>{const t=thb.getBoundingClientRect();mn.scrollBy({behavior:'smooth',top:(e.clientY<t.top?-1:1)*mn.clientHeight*.9});});
+el.addEventListener('wheel',e=>{e.preventDefault();mn.scrollTop+=e.deltaY;},{passive:false});
+thb.addEventListener('keydown',e=>{
+ const step={ArrowUp:-40,ArrowDown:40,PageUp:-mn.clientHeight*.9,PageDown:mn.clientHeight*.9}[e.key];
+ if(step!==undefined){e.preventDefault();mn.scrollBy({top:step});}
+ else if(e.key==='Home'){e.preventDefault();mn.scrollTop=0;}
+ else if(e.key==='End'){e.preventDefault();mn.scrollTop=mn.scrollHeight;}});
+upd();
+})();
+</script></body></html>

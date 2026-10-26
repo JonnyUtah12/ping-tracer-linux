@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PingTracer API</title>
+<style>:root{--bg:#f4f6f8;--fg:#1d2733;--mut:#6b7785;--bd:#d9dfe6;--panel:#fff}@media(prefers-color-scheme:dark){:root{--bg:#14181d;--fg:#e3e8ee;--mut:#8b97a5;--bd:#2d3641;--panel:#1c222a}}
+body{margin:0;font:14px/1.5 system-ui,Segoe UI,sans-serif;background:var(--bg);color:var(--fg)}main{max-width:900px;margin:0 auto;padding:20px 16px}
+table{border-collapse:collapse;width:100%;background:var(--panel)}td,th{border:1px solid var(--bd);padding:6px 10px;text-align:left;vertical-align:top}th{color:var(--mut)}code{font-family:Consolas,monospace}</style></head><body><main>
+<h1>PingTracer REST API</h1>
+<p>All endpoints are JSON unless noted. Local mode only accepts same-origin requests to a loopback host. In <code>--agent</code> mode every <code>/api</code> call needs the <code>x-pp-token</code> header (or <code>?token=</code>). <code>focus</code> is a statistics window in ms (0 = all).</p>
+<table><tr><th>Method &amp; path</th><th>Purpose</th></tr>
+<tr><td><code>GET /api/targets?focus=</code></td><td>All targets with per-hop statistics and extension columns</td></tr>
+<tr><td><code>POST /api/targets</code> <code>{host, agent?:{url,token}}</code></td><td>Start tracing a target (optionally from a remote agent)</td></tr>
+<tr><td><code>GET|DELETE /api/targets/:id</code></td><td>One target / close it</td></tr>
+<tr><td><code>POST /api/targets/:id/start|stop|clear|retrace</code></td><td>Pause, resume, clear samples, rediscover the route</td></tr>
+<tr><td><code>POST /api/targets/:id/mode</code> <code>{mode:'full'|'final'}</code></td><td>Manual route adjustment: trace the full route or only the final hop</td></tr>
+<tr><td><code>POST /api/targets/:id/hide</code> <code>{hidden:[ttl,…]}</code></td><td>Hide hops from graphs</td></tr>
+<tr><td><code>GET /api/targets/:id/samples?hop=&amp;window=</code></td><td>Raw samples for a hop</td></tr>
+<tr><td><code>GET /api/targets/:id/export?format=long|wide|csv&amp;all=0|1&amp;focus=</code></td><td>Text export (text/plain)</td></tr>
+<tr><td><code>GET /api/targets/:id/raw?since=</code></td><td>Incremental sample feed (used by controllers)</td></tr>
+<tr><td><code>GET|POST /api/settings</code></td><td>Interval, timeout, packet size, max hops, history size, alert rules, SMTP, tray alerts. The SMTP password is write-only.</td></tr>
+<tr><td><code>GET /api/alerts</code></td><td>Recent alert events</td></tr>
+<tr><td><code>GET|POST /api/targetlist</code></td><td>Export / import a target list (<code>{text}</code>)</td></tr>
+<tr><td><code>GET|POST /api/sampleset</code></td><td>Export / import every target's history</td></tr>
+<tr><td><code>GET|POST /api/sets</code>, <code>POST|DELETE /api/sets/:name</code></td><td>Saved sample sets (list, save, open, delete)</td></tr>
+<tr><td><code>POST /api/email/test</code>, <code>POST /api/email/report</code></td><td>Send a test message / a target report using the SMTP settings</td></tr>
+<tr><td><code>GET|POST /api/extensions</code></td><td>List / reload extensions</td></tr>
+<tr><td><code>GET /api/dashboard</code>, <code>GET /api/info</code></td><td>Overview of all targets; engine and version</td></tr>
+<tr><td><code>GET|POST /api/configs</code>, <code>PUT|DELETE /api/configs/:id</code>, <code>POST /api/configs/:id/move</code></td><td>Trace configurations (interval, timeout, packet size, max hops, keep days); assign with <code>POST /api/targets/:id/update {configId}</code></td></tr>
+<tr><td><code>GET /api/targets/:id/routes</code>, <code>GET /api/targets/:id/route?at=</code></td><td>Route-change history / the route at a moment</td></tr>
+<tr><td><code>GET|POST|PUT|DELETE /api/targets/:id/comments</code></td><td>Timeline comments</td></tr>
+<tr><td><code>POST /api/targets/:id/column</code>, <code>/reresolve</code>, <code>/reset</code>, <code>/rename</code>, <code>/update</code>, <code>GET /history</code></td><td>Custom grid columns, hop-name lookup, reset, rename, settings, long-range history</td></tr>
+<tr><td><code>GET|POST /api/summaries</code>, <code>/api/summaries/:id[/add|remove|config|loadlist|list]</code>, <code>GET /api/summary-data</code></td><td>Named groups of targets or hops</td></tr>
+<tr><td><code>GET /api/sessions</code>, <code>POST /api/sessions/:id/open</code>, <code>DELETE /api/sessions/:id</code></td><td>Stored sessions (closed targets)</td></tr>
+<tr><td><code>GET|POST /api/workspaces</code> <code>{action: new|open|rename|delete|clear|export|import}</code></td><td>Workspaces</td></tr>
+<tr><td><code>GET /api/guidance</code>, <code>POST /api/guidance/export</code>, <code>GET /api/packettypes</code>, <code>GET /api/interfaces</code></td><td>Interpretation guides, packet types, network interfaces</td></tr>
+<tr><td><code>GET|POST /api/lan</code>, <code>POST /api/lan/oui</code>, <code>GET|POST /api/wifi</code></td><td>LAN device discovery, vendor database update, Wi-Fi monitoring</td></tr>
+<tr><td><code>GET /api/targets?from=&amp;to=</code>, <code>GET /api/targets/:id?from=&amp;to=</code></td><td>Statistics over a fixed time range (historical focus) instead of a live window</td></tr>
+<tr><td><code>GET /api/targets/:id/samples?hop=&amp;from=&amp;to=</code></td><td>Samples of a past window (graph panning)</td></tr>
+<tr><td><code>GET /api/targets/:id/insights?from=&amp;to=&amp;sensitivity=1..10</code></td><td>Insights: where problems start, detected events, best and worst periods</td></tr>
+<tr><td><code>GET /api/targets/:id/exportrange?from=&amp;to=&amp;mode=samples|periods&amp;period=&amp;format=csv|tsv</code></td><td>Export a time range, every sample or statistics aggregated per period (minimum 5 minutes)</td></tr>
+<tr><td><code>POST /api/targets/:id/update</code> <code>{persistence:'local'|'adhoc', followIp, configId, name}</code></td><td>Target options: keep or ad hoc, follow IP changes</td></tr>
+<tr><td><code>GET /api/whoami</code></td><td>Current session: admin, viewer or LiveShare</td></tr>
+<tr><td><code>GET|POST /api/webusers</code>, <code>PUT|DELETE /api/webusers/:name</code>, <code>POST /api/me/password</code></td><td>Web users for HTTPS access (admin or read-only viewer)</td></tr>
+<tr><td><code>GET|POST /api/liveshares</code>, <code>PUT|DELETE /api/liveshares/:id</code></td><td>LiveShare read-only links (optional password and expiry), opened at <code>/share/:id</code></td></tr>
+<tr><td><code>POST /api/quit</code></td><td>Save and exit</td></tr></table>
+<h2>Probe semantics: ICMP, TCP and UDP route tracing</h2>
+<p><code>GET /api/packettypes</code> lists the available probe types; <code>tcp</code> and <code>udp</code> need the native probe helper (Windows) and a port. With a protocol target the route is traced with the protocol itself, not just with ICMP:</p>
+<ul>
+<li><b>Discovery.</b> While the path is unknown, protocol probes run at increasing TTLs (1 … maxHops). The smallest TTL at which the destination itself answers is the protocol path length (<code>finalTtl</code> in every target view): for TCP a completed handshake or an RST, for UDP a datagram reply or the ICMP Port Unreachable that a connected UDP socket surfaces as a connection reset. A middle router's ICMP Time-Exceeded does not count as reaching the destination.</li>
+<li><b>Steady state.</b> Once <code>finalTtl</code> is known, protocol probes run only at that TTL; every hop below it keeps being measured with TTL-limited ICMP probes each round.</li>
+<li><b>Hop attribution (Windows limitation).</b> User-mode TCP/UDP sockets cannot report <i>which</i> router sent an ICMP Time-Exceeded, so intermediate hop addresses always come from the engine's ICMP probes; the protocol probe proves reachability and carries the destination RTT. The same restriction applies to TCP and UDP alike.</li>
+<li><b>Destination state.</b> <code>destState</code> on a target view classifies the last final-TTL protocol probe: <code>open</code> (answered), <code>refused</code> (port closed — the destination is reached), <code>filtered</code> (no answer), <code>unreachable</code> (network/host unreachable), <code>unknown</code> (no probe result yet). An unanswered probe is recorded as packet loss on the destination hop and state <code>filtered</code>; it is never reported as “offline”, and tracing continues.</li>
+<li><b>Helper protocol.</b> The engine drives the helper over stdin/stdout. Protocol probes: <code>T|U id host port timeoutMs ttl size</code> → <code>id ok|refused|unreach|timeout|err ip ms</code>. Plain ICMP probes (all targets): <code>id host ttl timeoutMs size</code> → <code>id ok|ttl|timeout|err ip ms</code>. Setting <code>PP_HELPER</code> swaps in another helper executable (a <code>.js</code> file runs under the same node binary) — used by the test suite (<code>tests/</code>).</li>
+</ul>
+</main></body></html>

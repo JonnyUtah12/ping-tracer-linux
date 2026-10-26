@@ -1,0 +1,11 @@
+# Keeps the SHA-pinned GitHub Actions in .github/workflows/ current.
+# Pins are immutable (supply-chain hardening, audit 2026-10-16); this is the
+# controlled path for updating them: a reviewable PR that changes the SHA and
+# its version comment, instead of a mutable tag moving under us.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
